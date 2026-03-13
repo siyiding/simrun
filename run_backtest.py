@@ -64,9 +64,7 @@ class BacktestSystem:
             self.stock_pool = [s["f12"] for s in all_stocks]
             logger.info(f"成功获取 {len(self.stock_pool)} 只全A股")
             # 排除ST和退市股
-            df = df[~df['name'].str.contains('ST|退|B', na=False)]
             # 不做任何抽样截断，获取完整列表
-            self.stock_pool = df['code'].tolist()
             logger.info(f"成功获取 {len(self.stock_pool)} 只全A股进行回测")
         except Exception as e:
             logger.error(f"获取全A股失败: {e}")
