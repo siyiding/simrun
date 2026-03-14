@@ -44,3 +44,4 @@ fetcher.run(start_date="20200101")
 \n## 阶段4：LSTM 模型训练\n执行 `python lstm_trainer.py` 进行基于滑动窗口的时序数据构建及LSTM深度学习模型的训练与评估。\n依赖 `tensorflow`, `keras`。
 \n## 阶段5：模型融合 (Ensemble)\n执行 `python model_fusion.py` 进行 XGBoost 和 LSTM 的时序对齐测试集验证，比较各种混合架构（加权、平均、Stacking），并保存最终的元学习器。依赖 `scikit-learn`。
 \n## 阶段6：回测验证\n执行 `python backtest_engine.py` 通过加载上一个阶段的融合预测权重，以模拟账户轮转策略评估收益与最大回撤。依赖 `pandas`, `numpy`。
+\n## 阶段7：桌面客户端 (UI)\n执行 `pip install -r requirements_ui.txt` 后，运行 `python run_ui.py` 启动 PySide6 构建的图形界面。可进行模型调度、参数配置与绩效可视化。
