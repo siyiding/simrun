@@ -39,7 +39,8 @@ class DataFetcher:
             
             # 清洗规则:
             # 1. 剔除 ST 和 退市
-            df = df[~df['name'].str.contains('ST|退|B', na=False)]
+            # 修改正则表达式，精确匹配包含 ST、*ST 或 以"退"结尾的，避免误杀包含"B"字母的正常股票
+            df = df[~df['name'].str.contains('ST|退', na=False)]
             
             stock_pool = df['code'].tolist()
             logger.info(f"清洗后有效股票数量: {len(stock_pool)} 只")
@@ -121,7 +122,19 @@ class DataFetcher:
             count = cursor.fetchone()[0]
             logger.info(f"数据库中共包含 {count} 只股票的数据。")
 
+    def close(self):
+        """关闭数据库连接"""
+        if not self.use_parquet and hasattr(self, 'conn') and self.conn:
+            self.conn.close()
+            logger.info("SQLite 数据库连接已关闭。")
+
+    def __del__(self):
+        self.close()
+
 if __name__ == "__main__":
     fetcher = DataFetcher(data_dir="stock_data_parquet", use_parquet=True)
-    # 为了演示运行速度，这里我们取最近一年的数据
-    fetcher.run(start_date="20230101")
+    try:
+        # 为了演示运行速度，这里我们取最近一年的数据
+        fetcher.run(start_date="20230101")
+    finally:
+        fetcher.close()
