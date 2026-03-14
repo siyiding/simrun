@@ -4,14 +4,15 @@
         "fee_rate": 0.0003,
         "buy_threshold": 0.01,
         "sell_threshold": -0.01,
-        "holding_period": 5
+        "holding_period": 5,
+        "hard_stop_loss": -0.05
     },
     "metrics": {
-        "total_return": 0.8540679041449802,
-        "max_drawdown": -0.5601546505785384,
-        "sharpe_ratio": 1.989336576889141,
-        "win_rate": 0.4827586206896552,
-        "pl_ratio": 0.7929902332061831,
-        "total_trades": 29
+        "total_return": -0.13960174714916326,
+        "max_drawdown": -0.14713570083479116,
+        "sharpe_ratio": -2.4920694652029036,
+        "win_rate": 0.2962962962962963,
+        "pl_ratio": 1.2112135901118826,
+        "total_trades": 27
     }
 }

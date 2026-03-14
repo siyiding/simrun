@@ -50,18 +50,35 @@ def compute_drawdown(cum_returns):
     drawdowns = (cum_returns - rolling_max) / rolling_max
     return drawdowns.min()
 
+def calculate_market_filter(data, date_col, code_col):
+    """
+    Calculate a synthetic market filter.
+    Since we might not have a dedicated HS300 index file loaded, we simulate a market index
+    by taking the daily equal-weighted average close of all available stocks.
+    Then we compute the MA20 of this synthetic index.
+    Returns a Series of boolean flags indexed by date: True if MA20 is trending up/flat, False if down.
+    """
+    market_index = data.groupby(date_col)['收盘'].mean().sort_index()
+    market_ma20 = market_index.rolling(window=20).mean()
+    # Trend is up if today's MA20 > yesterday's MA20
+    trend_up = market_ma20.diff() >= 0
+    # Fill NAs with True (allow trading initially until we have 20 days)
+    trend_up = trend_up.fillna(True)
+    return trend_up
+
 def run_backtest(data_dir="stock_features_parquet"):
-    logging.info("=== Starting Phase 6: Backtest Engine ===")
+    logging.info("=== Starting Phase 6: Backtest Engine (with Risk Management) ===")
     predictor = ModelPredictor()
     
     # Adjusted Config to trigger trades
     INITIAL_CAPITAL = 1000000.0
     TRANSACTION_FEE_RATE = 0.0003
-    BUY_THRESHOLD = 0.01  # Lowered to 1% to generate trades
+    BUY_THRESHOLD = 0.01  
     SELL_THRESHOLD = -0.01 
     HOLDING_PERIOD = 5
+    HARD_STOP_LOSS = -0.05  # -5% hard stop loss
     
-    logging.info(f"Backtest Config: Capital={INITIAL_CAPITAL}, Fee={TRANSACTION_FEE_RATE}, BuyThreshold={BUY_THRESHOLD}")
+    logging.info(f"Backtest Config: Capital={INITIAL_CAPITAL}, Fee={TRANSACTION_FEE_RATE}, BuyThreshold={BUY_THRESHOLD}, StopLoss={HARD_STOP_LOSS}")
     
     files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.parquet') and "features.parquet" in f]
     dfs = [pd.read_parquet(file) for file in files]
@@ -70,7 +87,12 @@ def run_backtest(data_dir="stock_features_parquet"):
     date_col = 'date' if 'date' in data.columns else '日期'
     code_col = 'stock_code' if 'stock_code' in data.columns else '股票代码'
     
+    # Sort data chronologically
     data = data.sort_values(by=[code_col, date_col]).reset_index(drop=True)
+    
+    # 1. Prepare Market Risk Filter
+    market_trend_safe = calculate_market_filter(data, date_col, code_col)
+    
     unique_dates = sorted(data[date_col].unique())
     test_dates_start = unique_dates[int(len(unique_dates) * 0.8)]
     test_dates = [d for d in unique_dates if d >= test_dates_start]
@@ -84,20 +106,46 @@ def run_backtest(data_dir="stock_features_parquet"):
     for current_date in test_dates:
         daily_portfolio_value = capital
         stocks_to_sell = []
+        is_market_safe = market_trend_safe.get(current_date, True)
+        
         for code, pos in list(portfolio.items()):
             pos['days_held'] += 1
             if code in stock_groups and current_date in stock_groups[code].index:
+                # Assuming current_price is close price.
+                # In a real environment, stop loss triggers intraday (on Low). We approximate using close or low.
                 current_price = stock_groups[code].loc[current_date, '收盘']
+                daily_low = stock_groups[code].loc[current_date, '最低']
+                
                 daily_portfolio_value += pos['qty'] * current_price
-                past_data = stock_groups[code].loc[:current_date]
+                
+                # Check Hard Stop Loss (approximate intraday using Low price)
+                max_loss_price = pos['buy_price'] * (1 + HARD_STOP_LOSS)
+                stop_loss_triggered = daily_low <= max_loss_price
+                
+                # Model signal exit
                 signal_exit = False
-                if len(past_data) >= 20:
+                past_data = stock_groups[code].loc[:current_date]
+                if not stop_loss_triggered and len(past_data) >= 20:
                     window = past_data.iloc[-20:]
                     pred_return = predictor.predict(window)
                     if pred_return < SELL_THRESHOLD:
                         signal_exit = True
-                if pos['days_held'] >= HOLDING_PERIOD or signal_exit:
-                    stocks_to_sell.append((code, current_price, "TIME_EXIT" if pos['days_held'] >= HOLDING_PERIOD else "SIGNAL_EXIT"))
+                        
+                # Time exit
+                time_exit = pos['days_held'] >= HOLDING_PERIOD
+                
+                if stop_loss_triggered:
+                    # If stopped out intraday, execution price is at the stop loss level or slightly worse
+                    execute_price = min(current_price, max_loss_price)
+                    stocks_to_sell.append((code, execute_price, "HARD_STOP_LOSS"))
+                elif time_exit:
+                    stocks_to_sell.append((code, current_price, "TIME_EXIT"))
+                elif signal_exit:
+                    stocks_to_sell.append((code, current_price, "SIGNAL_EXIT"))
+                elif not is_market_safe:
+                    # Force liquidation if market trend turns dangerous
+                    stocks_to_sell.append((code, current_price, "MARKET_RISK_EXIT"))
+                    
             else:
                 daily_portfolio_value += pos['qty'] * pos['buy_price']
                 
@@ -114,45 +162,58 @@ def run_backtest(data_dir="stock_features_parquet"):
                 'reason': reason, 'price': price, 'qty': pos['qty'],
                 'profit': profit, 'profit_pct': profit_pct
             })
-            logging.debug(f"{current_date} SELL {code} @ {price:.2f} | Profit: {profit:.2f} ({profit_pct:.2%})")
+            logging.debug(f"{current_date} SELL {code} @ {price:.2f} | Profit: {profit:.2f} ({profit_pct:.2%}) | Reason: {reason}")
 
-        buy_candidates = []
-        for code, group in stock_groups.items():
-            if current_date in group.index and code not in portfolio:
-                past_data = group.loc[:current_date]
-                if len(past_data) >= 20:
-                    window = past_data.iloc[-20:]
-                    try:
-                        pred_return = predictor.predict(window)
-                        if pred_return > BUY_THRESHOLD:
-                            buy_candidates.append({'code': code, 'pred': pred_return, 'price': group.loc[current_date, '收盘']})
-                    except Exception as e:
-                        pass
-                        
-        buy_candidates.sort(key=lambda x: x['pred'], reverse=True)
-        available_slots = 5 - len(portfolio)
-        
-        for candidate in buy_candidates[:available_slots]:
-            if capital < 10000: break
-            code = candidate['code']
-            price = candidate['price']
-            allocation = capital / available_slots
-            qty = int(allocation / price / 100) * 100
+        # Buy opportunities
+        if is_market_safe:
+            buy_candidates = []
+            for code, group in stock_groups.items():
+                if current_date in group.index and code not in portfolio:
+                    past_data = group.loc[:current_date]
+                    if len(past_data) >= 20:
+                        window = past_data.iloc[-20:]
+                        try:
+                            pred_return = predictor.predict(window)
+                            if pred_return > BUY_THRESHOLD:
+                                buy_candidates.append({'code': code, 'pred': pred_return, 'price': group.loc[current_date, '收盘']})
+                        except Exception as e:
+                            pass
+                            
+            buy_candidates.sort(key=lambda x: x['pred'], reverse=True)
+            available_slots = 5 - len(portfolio)
             
-            if qty > 0:
-                cost = qty * price
-                fee = cost * TRANSACTION_FEE_RATE
-                total_cost = cost + fee
-                capital -= total_cost
-                portfolio[code] = {'qty': qty, 'buy_price': price, 'days_held': 0}
-                trade_records.append({
-                    'date': current_date, 'stock': code, 'action': 'BUY',
-                    'reason': f"PRED: {candidate['pred']:.4f}", 'price': price,
-                    'qty': qty, 'profit': 0, 'profit_pct': 0
-                })
-                logging.debug(f"{current_date} BUY {code} @ {price:.2f} | Pred: {candidate['pred']:.2%}")
+            for candidate in buy_candidates[:available_slots]:
+                if capital < 10000: break
+                code = candidate['code']
+                price = candidate['price']
+                allocation = capital / available_slots
+                qty = int(allocation / price / 100) * 100
                 
-        portfolio_history.append({'date': current_date, 'value': daily_portfolio_value + (capital if len(portfolio)==0 else 0)})
+                if qty > 0:
+                    cost = qty * price
+                    fee = cost * TRANSACTION_FEE_RATE
+                    total_cost = cost + fee
+                    capital -= total_cost
+                    portfolio[code] = {'qty': qty, 'buy_price': price, 'days_held': 0}
+                    trade_records.append({
+                        'date': current_date, 'stock': code, 'action': 'BUY',
+                        'reason': f"PRED: {candidate['pred']:.4f}", 'price': price,
+                        'qty': qty, 'profit': 0, 'profit_pct': 0
+                    })
+                    logging.debug(f"{current_date} BUY {code} @ {price:.2f} | Pred: {candidate['pred']:.2%}")
+        else:
+            logging.debug(f"{current_date} MARKET UNSAFE - Skipping Buy Candidates.")
+                
+        # Fix: subtract portfolio sell proceeds from daily_portfolio_value if we calculated current_price earlier
+        # To be completely accurate, daily_portfolio_value = cash + sum(pos.qty * pos.price)
+        current_portfolio_value = capital
+        for code, pos in portfolio.items():
+            if code in stock_groups and current_date in stock_groups[code].index:
+                current_portfolio_value += pos['qty'] * stock_groups[code].loc[current_date, '收盘']
+            else:
+                current_portfolio_value += pos['qty'] * pos['buy_price']
+                
+        portfolio_history.append({'date': current_date, 'value': current_portfolio_value})
             
     df_history = pd.DataFrame(portfolio_history)
     df_history['return'] = df_history['value'].pct_change()
@@ -174,7 +235,7 @@ def run_backtest(data_dir="stock_features_parquet"):
     else:
         total_trades, winning_trades, win_rate, pl_ratio = 0, 0, 0.0, 0.0
     
-    logging.info("=== Backtest Results ===")
+    logging.info("=== Backtest Results (Post Risk Fix) ===")
     logging.info(f"Total Return: {total_return:.2%}")
     logging.info(f"Max Drawdown: {drawdown:.2%}")
     logging.info(f"Sharpe Ratio: {sharpe_ratio:.2f}")
@@ -184,7 +245,8 @@ def run_backtest(data_dir="stock_features_parquet"):
     results = {
         "config": {
             "initial_capital": INITIAL_CAPITAL, "fee_rate": TRANSACTION_FEE_RATE,
-            "buy_threshold": BUY_THRESHOLD, "sell_threshold": SELL_THRESHOLD, "holding_period": HOLDING_PERIOD
+            "buy_threshold": BUY_THRESHOLD, "sell_threshold": SELL_THRESHOLD, "holding_period": HOLDING_PERIOD,
+            "hard_stop_loss": HARD_STOP_LOSS
         },
         "metrics": {
             "total_return": total_return, "max_drawdown": drawdown,
@@ -199,7 +261,7 @@ def run_backtest(data_dir="stock_features_parquet"):
         df_trades.to_csv('reports/trade_records.csv', index=False)
     df_history.to_csv('reports/portfolio_curve.csv', index=False)
     
-    logging.info("Phase 6 Backtest complete.")
+    logging.info("Phase 6 BugFix Backtest complete.")
 
 if __name__ == "__main__":
     os.makedirs('reports', exist_ok=True)
