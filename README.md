@@ -41,3 +41,4 @@ fetcher.run(start_date="20200101")
 脚本在拉取完成后，会自动调用 `verify_data()` 方法，打印出成功保存的文件数量及抽样文件的字段信息，确保数据格式完整。
 \n## 阶段2：特征工程\n执行 `python feature_engineering.py` 进行技术指标计算、标准化与特征筛选。\n依赖 `ta`, `scikit-learn`, `xgboost`。
 \n## 阶段3：XGBoost 模型训练\n执行 `python xgboost_trainer.py` 进行模型超参数调优、训练及评估，同时生成特征重要性分析报告。
+\n## 阶段4：LSTM 模型训练\n执行 `python lstm_trainer.py` 进行基于滑动窗口的时序数据构建及LSTM深度学习模型的训练与评估。\n依赖 `tensorflow`, `keras`。
