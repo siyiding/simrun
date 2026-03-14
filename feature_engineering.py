@@ -19,6 +19,14 @@ class FeatureEngineer:
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
         logger.add(os.path.join(self.output_dir, "feature_engineering.log"), rotation="10 MB")
+        
+        # 全局缩放器，避免不同股票之间的特征值不可比
+        self.robust_scaler = RobustScaler()
+        self.std_scaler = StandardScaler()
+        self.is_scaler_fitted = False
+        
+        # 全局选中的特征子集
+        self.global_selected_features = None
 
     def load_data(self, code):
         """加载阶段1处理好的 parquet 数据"""
@@ -57,82 +65,80 @@ class FeatureEngineer:
         ta_df = ta_df.dropna().reset_index(drop=True)
         return ta_df
 
+    def scale_features_global_fit(self, all_df):
+        """对全市场数据 fit 全局缩放器"""
+        logger.info("开始计算全局标准化参数...")
+        price_cols = ['开盘', '收盘', '最高', '最低']
+        feature_cols = [c for c in all_df.columns if c not in price_cols + ['日期', '股票代码', 'code', 'target_5d_return']]
+        
+        if not feature_cols:
+            return
+            
+        self.robust_scaler.fit(all_df[price_cols])
+        self.std_scaler.fit(all_df[feature_cols])
+        self.is_scaler_fitted = True
+        
+        # 将 scaler 保存到本地以供复用
+        import joblib
+        joblib.dump(self.robust_scaler, os.path.join(self.output_dir, 'robust_scaler.pkl'))
+        joblib.dump(self.std_scaler, os.path.join(self.output_dir, 'std_scaler.pkl'))
+        logger.info("全局标准化参数已保存。")
+
     def scale_features(self, df):
-        """
-        特征标准化：
-        技术指标采用Z-Score (StandardScaler)
-        价格数据采用Robust方法 (RobustScaler)
-        """
+        """使用全局缩放器进行 transform"""
         price_cols = ['开盘', '收盘', '最高', '最低']
         feature_cols = [c for c in df.columns if c not in price_cols + ['日期', '股票代码', 'code', 'target_5d_return']]
         
-        if not feature_cols:
+        if not feature_cols or not self.is_scaler_fitted:
             return df
 
-        # 价格类特征使用 RobustScaler
-        robust_scaler = RobustScaler()
-        df[price_cols] = robust_scaler.fit_transform(df[price_cols])
-
-        # 技术指标类使用 Z-Score (StandardScaler)
-        std_scaler = StandardScaler()
-        df[feature_cols] = std_scaler.fit_transform(df[feature_cols])
+        df[price_cols] = self.robust_scaler.transform(df[price_cols])
+        df[feature_cols] = self.std_scaler.transform(df[feature_cols])
 
         return df
 
-    def select_features(self, df, top_n=20):
-        """特征筛选：通过XGBoost重要性评估及递归消除(RFE)实现"""
-        # 准备特征与目标
-        feature_cols = [c for c in df.columns if c not in ['日期', '股票代码', 'code', 'target_5d_return']]
-        X = df[feature_cols]
-        y = df['target_5d_return']
+    def select_features_global(self, all_df, top_n=20):
+        """全局特征筛选：基于全市场数据，选出统一特征子集"""
+        logger.info("开始全局特征筛选 (RFE)...")
+        feature_cols = [c for c in all_df.columns if c not in ['日期', '股票代码', 'code', 'target_5d_return']]
         
-        if len(X) < 100:
-            # 样本量太小，跳过筛选直接返回
-            return df
-
-        # 使用 XGBoost 作为评估器
+        # 为加快速度，如果全市场数据太大，可以进行抽样
+        sample_df = all_df.sample(n=min(len(all_df), 100000), random_state=42)
+        X = sample_df[feature_cols]
+        y = sample_df['target_5d_return']
+        
         estimator = XGBRegressor(n_estimators=50, random_state=42, n_jobs=-1)
-        
-        # 递归特征消除 (RFE)
-        # 为了速度，step设为0.1(每次剔除10%)
         selector = RFE(estimator, n_features_to_select=top_n, step=0.1)
         selector = selector.fit(X, y)
         
-        # 获取筛选出的特征名
-        selected_features = [feature_cols[i] for i, selected in enumerate(selector.support_) if selected]
+        self.global_selected_features = [feature_cols[i] for i, selected in enumerate(selector.support_) if selected]
+        logger.info(f"全局筛选出的 Top {top_n} 特征为: {self.global_selected_features}")
         
-        # 返回仅包含重要特征的 DataFrame
-        keep_cols = ['日期', '股票代码', 'code', 'target_5d_return'] + selected_features
-        # 保证不丢失基础价格列（哪怕没被选上，为了后续回测可能需要）
+        # 保存全局特征列表
+        import json
+        with open(os.path.join(self.output_dir, 'selected_features.json'), 'w') as f:
+            json.dump(self.global_selected_features, f)
+
+    def select_features(self, df):
+        """应用全局特征子集"""
+        if not self.global_selected_features:
+            return df
+            
+        keep_cols = ['日期', '股票代码', 'code', 'target_5d_return'] + self.global_selected_features
         for p in ['开盘', '收盘', '最高', '最低', '成交量']:
             if p not in keep_cols and p in df.columns:
                 keep_cols.append(p)
                 
-        return df[keep_cols], selected_features
+        return df[[c for c in keep_cols if c in df.columns]]
 
-    def process_stock(self, code):
-        """处理单只股票的完整特征工程链路"""
-        df = self.load_data(code)
+    def process_stock(self, df):
+        """处理单只股票的特征生成（不包含标准化和筛选）"""
         if df is None or df.empty:
-            return False
+            return None
             
         # 1. 计算技术指标
         df = self.calculate_technical_indicators(df)
-        if df is None or df.empty:
-            return False
-            
-        # 2. 数据标准化
-        df = self.scale_features(df)
-        
-        # 3. 特征筛选 (针对每只股票选出20个重要特征)
-        df, selected_features = self.select_features(df, top_n=20)
-        
-        # 4. 存储
-        file_path = os.path.join(self.output_dir, f"{code}_features.parquet")
-        table = pa.Table.from_pandas(df)
-        pq.write_table(table, file_path)
-        
-        return True
+        return df
 
     def run(self):
         logger.info("=== 开始特征工程与筛选流程 ===")
@@ -143,12 +149,44 @@ class FeatureEngineer:
             logger.error("未找到第一阶段的数据，请先运行数据获取脚本。")
             return
             
-        success_count = 0
         logger.info(f"待处理股票数量: {len(codes)}")
         
-        for code in tqdm(codes, desc="特征工程处理"):
-            if self.process_stock(code):
-                success_count += 1
+        # 第一阶段：计算所有股票的技术指标并汇总
+        all_dfs = []
+        for code in tqdm(codes, desc="计算技术指标"):
+            df = self.load_data(code)
+            processed_df = self.process_stock(df)
+            if processed_df is not None and not processed_df.empty:
+                all_dfs.append(processed_df)
+                
+        if not all_dfs:
+            logger.error("没有任何有效股票数据进行特征工程。")
+            return
+            
+        # 合并全市场数据
+        all_market_df = pd.concat(all_dfs, ignore_index=True)
+        logger.info(f"汇总全市场数据，共计 {len(all_market_df)} 条记录")
+        
+        # 第二阶段：全局 fit 标准化器
+        self.scale_features_global_fit(all_market_df)
+        
+        # 第三阶段：全局特征筛选
+        self.select_features_global(all_market_df, top_n=20)
+        
+        # 第四阶段：应用全局规则，单独保存各股票的 parquet
+        success_count = 0
+        for df in tqdm(all_dfs, desc="特征转换与存储"):
+            code = df['code'].iloc[0]
+            # 标准化
+            scaled_df = self.scale_features(df)
+            # 筛选特征
+            final_df = self.select_features(scaled_df)
+            
+            # 存储
+            file_path = os.path.join(self.output_dir, f"{code}_features.parquet")
+            table = pa.Table.from_pandas(final_df)
+            pq.write_table(table, file_path)
+            success_count += 1
                 
         logger.info(f"=== 特征工程完成 ===")
         logger.info(f"成功处理并保存: {success_count} 只股票的特征数据。")
