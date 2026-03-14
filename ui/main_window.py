@@ -14,6 +14,9 @@ matplotlib.use('QtAgg')
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
+# Global task state to prevent duplicate runs
+_task_running = False
+
 # Worker Thread for running actual background processes
 class ScriptWorkerThread(QThread):
     update_signal = Signal(str)
@@ -25,9 +28,10 @@ class ScriptWorkerThread(QThread):
         self.args = args
 
     def run(self):
+        global _task_running
+        _task_running = True
         try:
             self.update_signal.emit(f"正在执行脚本: {self.script_path}...")
-            # Run the script in the parent directory (simrun/)
             cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
             process = subprocess.Popen(
                 [sys.executable, self.script_path] + list(self.args),
@@ -48,6 +52,8 @@ class ScriptWorkerThread(QThread):
                 self.finished_signal.emit(False, f"执行失败，退出码: {process.returncode}")
         except Exception as e:
             self.finished_signal.emit(False, str(e))
+        finally:
+            _task_running = False
 
 
 class MainWindow(QMainWindow):
@@ -56,22 +62,33 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SimRun Quant - AI量化交易系统")
         self.resize(1200, 800)
         
-        # Central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         
-        # Tabs
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
         
-        # Setup Tabs (分步操作)
-        self._setup_data_tab()      # 步骤1：数据下载
-        self._setup_training_tab()  # 步骤2：模型训练
-        self._setup_backtest_tab()  # 步骤3：执行回测
-        self._setup_results_tab()   # 结果展示
+        self._setup_data_tab()
+        self._setup_training_tab()
+        self._setup_backtest_tab()
+        self._setup_results_tab()
         
         self.statusBar().showMessage("就绪。等待执行指令...")
+
+    def check_task_running(self):
+        global _task_running
+        if _task_running:
+            QMessageBox.warning(self, "警告", "当前有任务正在运行中，请等待结束后再启动新任务！")
+            return True
+        return False
+
+    def validate_float(self, text, field_name):
+        try:
+            return float(text)
+        except ValueError:
+            QMessageBox.warning(self, "参数错误", f"'{field_name}' 必须是有效的数字！")
+            return None
 
     def _setup_data_tab(self):
         tab = QWidget()
@@ -190,7 +207,6 @@ class MainWindow(QMainWindow):
         
         self.metrics_text = QTextEdit()
         self.metrics_text.setReadOnly(True)
-        # Set Chinese font
         self.metrics_text.setStyleSheet("font-family: 'Microsoft YaHei', 'SimHei'; font-size: 14px;")
         top_splitter.addWidget(self.metrics_text)
         
@@ -219,11 +235,10 @@ class MainWindow(QMainWindow):
         widget.verticalScrollBar().setValue(widget.verticalScrollBar().maximum())
 
     def on_start_data(self):
+        if self.check_task_running(): return
         self.append_log(self.data_log_output, ">>> 开始执行数据准备任务...")
         self.btn_download.setEnabled(False)
         
-        # Determine script
-        # Ideally data_fetcher.py and feature_engineering.py
         cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         script = "data_fetcher.py" if self.cb_data_source.currentIndex() == 1 else "feature_engineering.py"
         
@@ -242,6 +257,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", "数据处理失败，详情请看日志。")
 
     def on_start_training(self):
+        if self.check_task_running(): return
         task = self.cb_model_type.currentText()
         self.append_log(self.log_output, f">>> 正在启动任务: {task}")
         self.btn_train.setEnabled(False)
@@ -268,12 +284,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", "训练过程中发生错误，详情请看日志。")
 
     def on_run_backtest(self):
+        # Validate inputs
+        if self.validate_float(self.le_capital.text(), "初始资金") is None: return
+        if self.validate_float(self.le_fee.text(), "交易手续费率") is None: return
+        if self.validate_float(self.le_buy_th.text(), "预测买入阈值") is None: return
+        if self.validate_float(self.le_sell_th.text(), "预测卖出阈值") is None: return
+        if self.validate_float(self.le_stop_loss.text(), "硬止损红线") is None: return
+
+        if self.check_task_running(): return
+        
         self.append_log(self.bt_log_output, ">>> 正在启动回测引擎 (加载风控拦截与硬止损规则)...")
         self.btn_run_bt.setEnabled(False)
-        
-        # Save UI config to a temporary environment variables or config file if needed, 
-        # For simplicity here we just run the backtest engine which uses its own defaults,
-        # In a real impl, we'd pass these args to the script.
         
         self.bt_worker = ScriptWorkerThread("backtest_engine.py")
         self.bt_worker.update_signal.connect(lambda msg: self.append_log(self.bt_log_output, msg))
@@ -319,7 +340,6 @@ class MainWindow(QMainWindow):
             ax = self.figure.add_subplot(111)
             if 'date' in df.columns and 'value' in df.columns:
                 ax.plot(pd.to_datetime(df['date']), df['value'], color='#d62728', linewidth=1.5)
-                # Ensure matplotlib handles Chinese properly
                 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
                 matplotlib.rcParams['axes.unicode_minus'] = False
                 ax.set_title("模拟资金净值走势曲线")
@@ -336,8 +356,6 @@ class MainWindow(QMainWindow):
                 self.table.setItem(row, 1, QTableWidgetItem(str(df_trades.iloc[row].get('stock', ''))))
                 action = str(df_trades.iloc[row].get('action', ''))
                 
-                # CN market: Red for BUY / Green for SELL (or contextually)
-                # Let's map "买入" and "卖出"
                 action_zh = "买入" if action == "BUY" else "卖出"
                 item_action = QTableWidgetItem(action_zh)
                 if action == "BUY":
