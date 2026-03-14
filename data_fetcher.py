@@ -111,6 +111,7 @@ class DataFetcher:
             end_date = datetime.now().strftime("%Y%m%d")
             
         strategies = [
+            (self._fetch_kline_tx, "akshare(腾讯)"),
             (self._fetch_kline_em, "akshare(东方财富)"),
             (self._fetch_kline_netease, "akshare(网易)"),
         ]
@@ -129,6 +130,22 @@ class DataFetcher:
         logger.error(f"股票 {code} 所有数据源(日K)均获取失败。")
         return None
 
+    def _fetch_kline_tx(self, code, start_date, end_date):
+        """腾讯日线 (主用)"""
+        prefix = 'sh' if code.startswith(('6', '9')) else 'sz' 
+        symbol = prefix + code
+        df = ak.stock_zh_a_hist_tx(symbol=symbol, start_date=start_date, end_date=end_date, adjust="qfq")
+        if df is not None and not df.empty:
+            df = df.rename(columns={
+                'date': '日期', 'open': '开盘', 'close': '收盘', 
+                'high': '最高', 'low': '最低', 'amount': '成交额'
+            })
+            if '成交量' not in df.columns:
+                df['成交量'] = df['成交额'] / df['收盘'] if '收盘' in df.columns else 0.0
+            if '换手率' not in df.columns:
+                df['换手率'] = 0.0
+        return df
+
     def _fetch_kline_em(self, code, start_date, end_date):
         """东方财富日线"""
         return ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="qfq", timeout=10)
@@ -139,7 +156,7 @@ class DataFetcher:
             # 网易接口通常需要带前缀
             prefix = '0' if code.startswith(('6', '9')) else '1' 
             symbol = prefix + code
-            df = ak.stock_zh_a_daily(symbol=symbol, start_date=start_date, end_date=end_date, timeout=10)
+            df = ak.stock_zh_a_daily(symbol=symbol, start_date=start_date, end_date=end_date)
             if df is not None and not df.empty:
                 # 重命名以适配东方财富的数据结构格式 (开盘, 收盘, 最高, 最低, 成交量)
                 df = df.rename(columns={
