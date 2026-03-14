@@ -43,3 +43,4 @@ fetcher.run(start_date="20200101")
 \n## 阶段3：XGBoost 模型训练\n执行 `python xgboost_trainer.py` 进行模型超参数调优、训练及评估，同时生成特征重要性分析报告。
 \n## 阶段4：LSTM 模型训练\n执行 `python lstm_trainer.py` 进行基于滑动窗口的时序数据构建及LSTM深度学习模型的训练与评估。\n依赖 `tensorflow`, `keras`。
 \n## 阶段5：模型融合 (Ensemble)\n执行 `python model_fusion.py` 进行 XGBoost 和 LSTM 的时序对齐测试集验证，比较各种混合架构（加权、平均、Stacking），并保存最终的元学习器。依赖 `scikit-learn`。
+\n## 阶段6：回测验证\n执行 `python backtest_engine.py` 通过加载上一个阶段的融合预测权重，以模拟账户轮转策略评估收益与最大回撤。依赖 `pandas`, `numpy`。
