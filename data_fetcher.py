@@ -143,7 +143,7 @@ class DataFetcher:
             # 重命名以适配东方财富的数据结构格式 (开盘, 收盘, 最高, 最低, 成交量)
             df = df.rename(columns={
                 'date': '日期', 'open': '开盘', 'close': '收盘', 
-                'high': '最高', 'low': '最低', 'volume': '成交量'
+                'high': '最高', 'low': '最低', 'volume': '成交量', 'amount': '成交额', 'turnover': '换手率'
             })
         return df
 
