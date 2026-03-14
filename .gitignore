@@ -1,0 +1,6 @@
+stock_data_parquet/
+stock_features_parquet/
+models/
+__pycache__/
+*.pyc
+.env
