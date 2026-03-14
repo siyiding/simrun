@@ -59,6 +59,8 @@ class DataFetcher:
         # 清洗规则:
         # 1. 剔除 ST 和 退市
         df = df[~df['name'].str.contains('ST|退', na=False)]
+        # 2. 剔除北交所股票 (bj开头)
+        df = df[~df['code'].str.lower().str.startswith('bj', na=False)]
         
         stock_pool = df['code'].tolist()
         logger.info(f"清洗后有效股票数量: {len(stock_pool)} 只")
