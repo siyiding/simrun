@@ -171,8 +171,8 @@ class DataFetcher:
         
         logger.info(f"开始拉取历史数据，起始日期: {start_date}")
         # 为了演示和通过任务要求，这里缩短数量只取 5 只作为数据结构与存储的验证
-        test_pool = stock_pool[:5]
-        for code in tqdm(test_pool, desc="拉取日线数据"):
+        test_pool = stock_pool
+        for code in tqdm(test_pool, desc="拉取日线数据", bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"):
             df = self.fetch_daily_data(code, start_date=start_date)
             if df is not None and not df.empty:
                 self.save_data(df, code)
