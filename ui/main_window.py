@@ -1,3 +1,4 @@
+import re
 import os
 import sys
 import json
@@ -7,7 +8,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QPushButton, QLabel, QTabWidget, QTableWidget, 
                                QTableWidgetItem, QHeaderView, QFormLayout, 
                                QLineEdit, QComboBox, QGroupBox, QSplitter,
-                               QTextEdit, QMessageBox)
+                               QTextEdit, QMessageBox, QProgressBar)
 from PySide6.QtCore import Qt, QThread, Signal
 import matplotlib
 matplotlib.use('QtAgg')
@@ -20,6 +21,7 @@ _task_running = False
 # Worker Thread for running actual background processes
 class ScriptWorkerThread(QThread):
     update_signal = Signal(str)
+    progress_signal = Signal(int)
     finished_signal = Signal(bool, str)
 
     def __init__(self, script_path, *args):
@@ -42,10 +44,23 @@ class ScriptWorkerThread(QThread):
                 bufsize=1
             )
             
+            import re
+            tqdm_pattern = re.compile(r'\s*(\d{1,3})%\|')
+            
             for line in process.stdout:
-                self.update_signal.emit(line.strip())
+                line_stripped = line.strip()
+                if line_stripped:
+                    match = tqdm_pattern.search(line_stripped)
+                    if match:
+                        try:
+                            self.progress_signal.emit(int(match.group(1)))
+                        except:
+                            pass
+                    else:
+                        self.update_signal.emit(line_stripped)
                 
             process.wait()
+            self.progress_signal.emit(100)
             if process.returncode == 0:
                 self.finished_signal.emit(True, "执行成功！")
             else:
@@ -117,6 +132,13 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.btn_download)
         layout.addLayout(btn_layout)
         
+        self.data_progress = QProgressBar()
+        self.data_progress.setRange(0, 100)
+        self.data_progress.setValue(0)
+        self.data_progress.setTextVisible(True)
+        self.data_progress.setStyleSheet("QProgressBar { border: 1px solid grey; border-radius: 3px; text-align: center; } QProgressBar::chunk { background-color: #4CAF50; width: 10px; }")
+        layout.addWidget(self.data_progress)
+        
         self.data_log_output = QTextEdit()
         self.data_log_output.setReadOnly(True)
         layout.addWidget(QLabel("数据处理日志:"))
@@ -144,6 +166,13 @@ class MainWindow(QMainWindow):
         self.btn_train.setMinimumHeight(40)
         btn_layout.addWidget(self.btn_train)
         layout.addLayout(btn_layout)
+        
+        self.train_progress = QProgressBar()
+        self.train_progress.setRange(0, 100)
+        self.train_progress.setValue(0)
+        self.train_progress.setTextVisible(True)
+        self.train_progress.setStyleSheet("QProgressBar { border: 1px solid grey; border-radius: 3px; text-align: center; } QProgressBar::chunk { background-color: #2196F3; width: 10px; }")
+        layout.addWidget(self.train_progress)
         
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
@@ -183,6 +212,13 @@ class MainWindow(QMainWindow):
         self.btn_run_bt.setMinimumHeight(40)
         btn_layout.addWidget(self.btn_run_bt)
         layout.addLayout(btn_layout)
+        
+        self.bt_progress = QProgressBar()
+        self.bt_progress.setRange(0, 100)
+        self.bt_progress.setValue(0)
+        self.bt_progress.setTextVisible(True)
+        self.bt_progress.setStyleSheet("QProgressBar { border: 1px solid grey; border-radius: 3px; text-align: center; } QProgressBar::chunk { background-color: #FF9800; width: 10px; }")
+        layout.addWidget(self.bt_progress)
         
         self.bt_log_output = QTextEdit()
         self.bt_log_output.setReadOnly(True)
@@ -242,8 +278,10 @@ class MainWindow(QMainWindow):
         cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         script = "data_fetcher.py" if self.cb_data_source.currentIndex() == 1 else "feature_engineering.py"
         
+        self.data_progress.setValue(0)
         self.data_worker = ScriptWorkerThread(script)
         self.data_worker.update_signal.connect(lambda msg: self.append_log(self.data_log_output, msg))
+        self.data_worker.progress_signal.connect(self.data_progress.setValue)
         self.data_worker.finished_signal.connect(self._on_data_finished)
         self.data_worker.start()
         
@@ -269,8 +307,10 @@ class MainWindow(QMainWindow):
         else:
             script = "model_fusion.py"
             
+        self.train_progress.setValue(0)
         self.train_worker = ScriptWorkerThread(script)
         self.train_worker.update_signal.connect(lambda msg: self.append_log(self.log_output, msg))
+        self.train_worker.progress_signal.connect(self.train_progress.setValue)
         self.train_worker.finished_signal.connect(self._on_training_finished)
         self.train_worker.start()
 
@@ -296,8 +336,10 @@ class MainWindow(QMainWindow):
         self.append_log(self.bt_log_output, ">>> 正在启动回测引擎 (加载风控拦截与硬止损规则)...")
         self.btn_run_bt.setEnabled(False)
         
+        self.bt_progress.setValue(0)
         self.bt_worker = ScriptWorkerThread("backtest_engine.py")
         self.bt_worker.update_signal.connect(lambda msg: self.append_log(self.bt_log_output, msg))
+        self.bt_worker.progress_signal.connect(self.bt_progress.setValue)
         self.bt_worker.finished_signal.connect(self._on_bt_finished)
         self.bt_worker.start()
 
