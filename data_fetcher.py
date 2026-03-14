@@ -131,7 +131,7 @@ class DataFetcher:
 
     def _fetch_kline_em(self, code, start_date, end_date):
         """东方财富日线"""
-        return ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
+        return ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_date, end_date=end_date, adjust="qfq", timeout=10)
 
     def _fetch_kline_netease(self, code, start_date, end_date):
         """网易日线 (网易不支持自动复权，但在此作为防崩溃备用，返回原始价格或前复权需要手动计算。此处简化直接返回)"""
@@ -139,7 +139,7 @@ class DataFetcher:
             # 网易接口通常需要带前缀
             prefix = '0' if code.startswith(('6', '9')) else '1' 
             symbol = prefix + code
-            df = ak.stock_zh_a_daily(symbol=symbol, start_date=start_date, end_date=end_date)
+            df = ak.stock_zh_a_daily(symbol=symbol, start_date=start_date, end_date=end_date, timeout=10)
             if df is not None and not df.empty:
                 # 重命名以适配东方财富的数据结构格式 (开盘, 收盘, 最高, 最低, 成交量)
                 df = df.rename(columns={
