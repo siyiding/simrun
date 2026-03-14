@@ -42,3 +42,4 @@ fetcher.run(start_date="20200101")
 \n## 阶段2：特征工程\n执行 `python feature_engineering.py` 进行技术指标计算、标准化与特征筛选。\n依赖 `ta`, `scikit-learn`, `xgboost`。
 \n## 阶段3：XGBoost 模型训练\n执行 `python xgboost_trainer.py` 进行模型超参数调优、训练及评估，同时生成特征重要性分析报告。
 \n## 阶段4：LSTM 模型训练\n执行 `python lstm_trainer.py` 进行基于滑动窗口的时序数据构建及LSTM深度学习模型的训练与评估。\n依赖 `tensorflow`, `keras`。
+\n## 阶段5：模型融合 (Ensemble)\n执行 `python model_fusion.py` 进行 XGBoost 和 LSTM 的时序对齐测试集验证，比较各种混合架构（加权、平均、Stacking），并保存最终的元学习器。依赖 `scikit-learn`。
