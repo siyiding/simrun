@@ -207,9 +207,8 @@ class TrainThread(QThread):
                     model_dir=self.params.get('model_dir', 'models')
                 )
             elif self.model_type == "LightGBM":
-                self.log_signal.emit("⚠️ LightGBM 训练模块开发中，使用 XGBoost 替代")
-                from xgboost_trainer import XGBoostTrainer
-                trainer = XGBoostTrainer(
+                from lightgbm_trainer import LightGBMTrainer
+                trainer = LightGBMTrainer(
                     data_dir=self.params.get('data_dir', 'stock_features_parquet'),
                     model_dir=self.params.get('model_dir', 'models')
                 )
@@ -248,6 +247,8 @@ class TrainThread(QThread):
                 metrics = {}
                 if self.model_type == "XGBoost":
                     metadata_file = os.path.join(model_dir, "xgboost_metadata.json")
+                elif self.model_type == "LightGBM":
+                    metadata_file = os.path.join(model_dir, "lightgbm_metadata.json")
                 else:
                     metadata_file = os.path.join(model_dir, "lstm_metadata.json")
                 
