@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from data_fetcher import DataFetcher
 
 # ==================== 配色方案 ====================
+# 深色主题
 COLORS = {
     'bg_primary': '#1E1E2E',
     'bg_secondary': '#2A2A3E',
@@ -47,6 +48,22 @@ COLORS = {
     'sidebar_bg': '#181825',
     'sidebar_hover': '#313244',
     'sidebar_active': '#45475A',
+}
+
+# 浅色主题
+LIGHT_COLORS = {
+    'bg_primary': '#F5F5F5',
+    'bg_secondary': '#FFFFFF',
+    'bg_card': '#FFFFFF',
+    'text_primary': '#333333',
+    'text_secondary': '#666666',
+    'accent': '#4A90D9',
+    'success': '#4CAF50',
+    'warning': '#FF9800',
+    'error': '#F44336',
+    'sidebar_bg': '#E8E8E8',
+    'sidebar_hover': '#DADADA',
+    'sidebar_active': '#CCCCCC',
 }
 
 class DownloadThread(QThread):
@@ -727,8 +744,12 @@ class MainWindow(QMainWindow):
             'data_path': 'stock_data_parquet'
         }
 
-        self._apply_dark_theme()
         self._load_settings_from_file()
+        # 根据保存的主题设置应用对应样式
+        if self.settings.get('theme', 'dark') == 'light':
+            self._apply_light_theme()
+        else:
+            self._apply_dark_theme()
         self._init_ui()
         self.statusBar().showMessage("✅ 系统就绪 | 📊 模型未加载 | 💰 账户: ¥1,000,000")
 
@@ -806,6 +827,69 @@ class MainWindow(QMainWindow):
                 border-radius: 6px;
                 padding: 4px;
                 selection-background-color: {COLORS['accent']};
+                selection-color: white;
+            }}
+        """
+        self.setStyleSheet(style)
+
+    def _apply_light_theme(self):
+        """应用浅色主题"""
+        style = f"""
+            QMainWindow, QWidget {{ background-color: {LIGHT_COLORS['bg_primary']}; }}
+            QWidget {{ font-family: "Microsoft YaHei", sans-serif; font-size: 14px; color: {LIGHT_COLORS['text_primary']}; }}
+            QLabel {{ color: {LIGHT_COLORS['text_primary']}; background: transparent; }}
+            QPushButton {{ background-color: {LIGHT_COLORS['accent']}; color: white; border: none; border-radius: 8px; padding: 10px 20px; font-weight: 600; }}
+            QPushButton:hover {{ background-color: #5A9DE9; }}
+            QLineEdit {{ background: {LIGHT_COLORS['bg_secondary']}; color: {LIGHT_COLORS['text_primary']}; border: 1px solid #CCCCCC; border-radius: 6px; padding: 8px; }}
+            QComboBox {{
+                background: {LIGHT_COLORS['bg_secondary']};
+                color: {LIGHT_COLORS['text_primary']};
+                border: 1px solid #CCCCCC;
+                border-radius: 6px;
+                padding: 8px 12px;
+                min-width: 120px;
+            }}
+            QComboBox:hover {{ border: 1px solid {LIGHT_COLORS['accent']}; }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 24px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid {LIGHT_COLORS['text_primary']};
+                margin-right: 8px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {LIGHT_COLORS['bg_secondary']};
+                color: {LIGHT_COLORS['text_primary']};
+                border: 1px solid #CCCCCC;
+                border-radius: 6px;
+                padding: 4px;
+                selection-background-color: {LIGHT_COLORS['accent']};
+                selection-color: white;
+            }}
+            QTextEdit {{ background: {LIGHT_COLORS['bg_secondary']}; color: {LIGHT_COLORS['text_primary']}; border: 1px solid #CCCCCC; border-radius: 8px; }}
+            QProgressBar {{ border: 2px solid {LIGHT_COLORS['bg_secondary']}; border-radius: 8px; text-align: center; background: {LIGHT_COLORS['bg_secondary']}; color: {LIGHT_COLORS['text_primary']}; font-weight: 600; }}
+            QProgressBar::chunk {{ border-radius: 6px; background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 {LIGHT_COLORS['accent']},stop:1 {LIGHT_COLORS['success']}); }}
+            QGroupBox {{ border: 1px solid #CCCCCC; border-radius: 12px; margin-top: 16px; padding: 16px; background: {LIGHT_COLORS['bg_card']}; font-weight: 600; }}
+            QGroupBox::title {{ subcontrol-origin: margin; left: 16px; padding: 4px 12px; color: {LIGHT_COLORS['accent']}; }}
+            QTableWidget {{ background: {LIGHT_COLORS['bg_secondary']}; color: {LIGHT_COLORS['text_primary']}; border: 1px solid #CCCCCC; border-radius: 8px; gridline-color: #CCCCCC; }}
+            QHeaderView::section {{ background: {LIGHT_COLORS['bg_card']}; color: {LIGHT_COLORS['text_primary']}; padding: 8px; border: none; border-bottom: 2px solid {LIGHT_COLORS['accent']}; }}
+            QStatusBar {{ background: {LIGHT_COLORS['bg_secondary']}; color: {LIGHT_COLORS['text_secondary']}; padding: 6px 12px; border-top: 1px solid #CCCCCC; font-size: 12px; }}
+            QDateEdit {{ background: {LIGHT_COLORS['bg_secondary']}; color: {LIGHT_COLORS['text_primary']}; border: 1px solid #CCCCCC; border-radius: 6px; padding: 8px; }}
+            QDateEdit::drop-down {{
+                border: none;
+                width: 24px;
+            }}
+            QDateEdit QAbstractItemView {{
+                background: {LIGHT_COLORS['bg_secondary']};
+                color: {LIGHT_COLORS['text_primary']};
+                border: 1px solid #CCCCCC;
+                border-radius: 6px;
+                padding: 4px;
+                selection-background-color: {LIGHT_COLORS['accent']};
                 selection-color: white;
             }}
         """
@@ -2215,10 +2299,12 @@ class MainWindow(QMainWindow):
         theme = self.theme_combo.currentText()
         if "深色" in theme:
             self.settings['theme'] = 'dark'
-            QMessageBox.information(self, "主题", "当前已是深色主题！")
+            self._apply_dark_theme()
+            QMessageBox.information(self, "主题", "✅ 深色主题已应用！")
         else:
             self.settings['theme'] = 'light'
-            QMessageBox.information(self, "主题", "浅色主题开发中，当前仅支持深色主题！")
+            self._apply_light_theme()
+            QMessageBox.information(self, "主题", "✅ 浅色主题已应用！")
 
         self._save_settings_to_file()
 
