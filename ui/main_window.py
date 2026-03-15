@@ -332,6 +332,74 @@ class TrainThread(QThread):
             self.finished.emit(False, f"训练失败: {str(e)}", {})
 
 
+class FeatureGenerateThread(QThread):
+    """后台特征生成线程"""
+    progress = Signal(int, str)
+    finished = Signal(bool, str, int)
+    log_signal = Signal(str)
+
+    def __init__(self, data_dir, output_dir, parent=None):
+        super().__init__(parent)
+        self.data_dir = data_dir
+        self.output_dir = output_dir
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
+
+    def run(self):
+        try:
+            self.log_signal.emit("🚀 开始特征工程...")
+            self.progress.emit(10, "初始化...")
+
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+            # 检查数据目录
+            if not os.path.exists(self.data_dir):
+                self.log_signal.emit(f"❌ 数据目录不存在: {self.data_dir}")
+                self.finished.emit(False, f"数据目录不存在: {self.data_dir}", 0)
+                return
+
+            files = [f for f in os.listdir(self.data_dir) if f.endswith('.parquet')]
+            if not files:
+                self.log_signal.emit("❌ 未找到原始数据文件，请先下载数据！")
+                self.finished.emit(False, "未找到原始数据文件", 0)
+                return
+
+            self.log_signal.emit(f"📊 找到 {len(files)} 只股票的数据")
+
+            # 导入特征工程模块
+            from feature_engineering import FeatureEngineer
+
+            self.progress.emit(20, "创建特征工程师...")
+            self.log_signal.emit("🔧 创建特征工程师...")
+
+            engineer = FeatureEngineer(data_dir=self.data_dir, output_dir=self.output_dir)
+
+            self.progress.emit(30, "计算技术指标...")
+            self.log_signal.emit("📈 正在计算技术指标 (MACD, RSI, OBV, 布林带, 均线...)")
+
+            # 运行特征工程
+            engineer.run()
+
+            # 验证输出
+            output_files = [f for f in os.listdir(self.output_dir) if f.endswith('.parquet')]
+            success_count = len(output_files)
+
+            self.progress.emit(100, "完成!")
+            self.log_signal.emit(f"✅ 特征工程完成! 生成 {success_count} 个特征文件")
+
+            self.finished.emit(True, f"特征工程完成! 成功处理 {success_count} 只股票", success_count)
+
+        except Exception as e:
+            import traceback
+            self.log_signal.emit(f"❌ 特征生成失败: {str(e)}")
+            self.log_signal.emit(traceback.format_exc())
+            self.finished.emit(False, f"特征生成失败: {str(e)}", 0)
+
+
 class BacktestThread(QThread):
     """后台回测线程"""
     progress = Signal(int, str)
@@ -636,6 +704,9 @@ class MainWindow(QMainWindow):
 
         # 模型训练相关
         self.train_thread = None
+
+        # 特征生成相关
+        self.feature_thread = None
 
         # 回测相关
         self.backtest_thread = None
@@ -1479,6 +1550,23 @@ class MainWindow(QMainWindow):
         fund_layout.addStretch()
         feature_layout.addRow("基本面：", fund_layout)
 
+        # 特征生成按钮
+        feature_btn_layout = QHBoxLayout()
+        feature_btn_layout.setSpacing(12)
+
+        self.gen_features_btn = QPushButton("🔧 生成特征")
+        self.gen_features_btn.setToolTip("从原始数据生成技术指标特征")
+        self.gen_features_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['warning']}; color: white; border: none; border-radius: 8px; padding: 10px 20px; font-weight: 600; }} QPushButton:hover {{ background-color: #FFAB2E; }} QPushButton:disabled {{ background-color: #555555; }}")
+        self.gen_features_btn.clicked.connect(self._start_feature_generation)
+        feature_btn_layout.addWidget(self.gen_features_btn)
+
+        self.feature_status_label = QLabel("")
+        self.feature_status_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        feature_btn_layout.addWidget(self.feature_status_label)
+
+        feature_btn_layout.addStretch()
+        feature_layout.addRow("", feature_btn_layout)
+
         layout.addWidget(feature_card)
 
         # 模型选择
@@ -1603,6 +1691,52 @@ class MainWindow(QMainWindow):
                 self.train_table.setItem(i, 1, QTableWidgetItem(mtype))
                 self.train_table.setItem(i, 2, QTableWidgetItem(acc))
                 self.train_table.setItem(i, 3, QTableWidgetItem(t))
+
+    def _start_feature_generation(self):
+        """开始特征生成"""
+        data_dir = self.settings.get('data_path', 'stock_data_parquet')
+        feature_dir = self.settings.get('feature_path', 'stock_features_parquet')
+
+        # 检查数据目录
+        import os
+        if not os.path.exists(data_dir):
+            QMessageBox.warning(self, "数据不存在", f"原始数据目录不存在: {data_dir}\n请先下载数据！")
+            return
+
+        files = [f for f in os.listdir(data_dir) if f.endswith('.parquet')]
+        if not files:
+            QMessageBox.warning(self, "数据不存在", f"原始数据目录为空: {data_dir}\n请先下载数据！")
+            return
+
+        # 禁用按钮，显示状态
+        self.gen_features_btn.setEnabled(False)
+        self.feature_status_label.setText("正在生成特征...")
+
+        # 创建并启动特征生成线程
+        self.feature_thread = FeatureGenerateThread(data_dir, feature_dir)
+        self.feature_thread.progress.connect(self._on_feature_progress)
+        self.feature_thread.finished.connect(self._on_feature_finished)
+        self.feature_thread.log_signal.connect(self._append_feature_log)
+        self.feature_thread.start()
+
+    def _on_feature_progress(self, value, status):
+        """特征生成进度更新"""
+        self.feature_status_label.setText(status)
+
+    def _append_feature_log(self, message):
+        """追加特征生成日志"""
+        self.train_log.append(message)  # 复用训练日志区域显示
+
+    def _on_feature_finished(self, success, message, count):
+        """特征生成完成"""
+        self.gen_features_btn.setEnabled(True)
+
+        if success:
+            self.feature_status_label.setText(f"✅ {message}")
+            QMessageBox.information(self, "特征生成完成", message)
+        else:
+            self.feature_status_label.setText(f"❌ {message}")
+            QMessageBox.warning(self, "特征生成失败", message)
 
     def _start_training(self):
         """开始训练"""
