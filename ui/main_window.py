@@ -59,7 +59,7 @@ class SidebarButton(QPushButton):
         self._set_style()
         
     def _set_style(self):
-        self.setStyleSheet(f"""
+        style = f"""
             QPushButton {
                 background-color: transparent;
                 color: {COLORS['text_secondary']};
@@ -73,7 +73,8 @@ class SidebarButton(QPushButton):
                 background-color: {COLORS['sidebar_hover']};
                 color: {COLORS['text_primary']};
             }
-        """)
+        """
+        self.setStyleSheet(style)
 
 
 class MainWindow(QMainWindow):
