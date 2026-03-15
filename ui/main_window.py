@@ -56,6 +56,67 @@ class DownloadThread(QThread):
     log_signal = Signal(str)
 
 
+    def __init__(self, data_fetcher, stock_pool, start_date, data_type="daily", parent=None):
+        super().__init__(parent)
+        self.data_fetcher = data_fetcher
+        self.stock_pool = stock_pool
+        self.start_date = start_date
+        self.data_type = data_type  # daily/weekly/monthly/minute
+        self._is_cancelled = False
+    
+    def cancel(self):
+        self._is_cancelled = True
+    
+    def run(self):
+        import time
+        success_count = 0
+        fail_count = 0
+        total = len(self.stock_pool)
+        
+        # 根据数据类型选择下载方法（fallback 到 daily 如果方法不存在）
+        type_map = {
+            "daily": "fetch_daily_data",
+            "weekly": "fetch_weekly_data",
+            "monthly": "fetch_monthly_data",
+            "minute": "fetch_minute_data"
+        }
+        fetch_method = type_map.get(self.data_type, "fetch_daily_data")
+        
+        # 检查方法是否存在，不存在则 fallback 到 daily
+        if not hasattr(self.data_fetcher, fetch_method):
+            self.log_signal.emit(f"⚠️ {self.data_type}类型暂不支持，使用日K线数据")
+            fetch_method = "fetch_daily_data"
+            self.data_type = "daily"
+        
+        self.log_signal.emit(f"开始下载 {total} 只股票的数据 ({self.data_type})...")
+        
+        for i, code in enumerate(self.stock_pool):
+            if self._is_cancelled:
+                self.log_signal.emit("下载已取消")
+                break
+            
+            self.progress.emit(i + 1, total, f"正在下载 {code}...")
+            
+            try:
+                fetch_func = getattr(self.data_fetcher, fetch_method)
+                df = fetch_func(code, start_date=self.start_date)
+                if df is not None and not df.empty:
+                    self.data_fetcher.save_data(df, code)
+                    success_count += 1
+                    self.log_signal.emit(f"✓ {code} 下载成功 ({len(df)} 条记录)")
+                else:
+                    fail_count += 1
+                    self.log_signal.emit(f"✗ {code} 无数据")
+            except Exception as e:
+                fail_count += 1
+                self.log_signal.emit(f"✗ {code} 下载失败: {str(e)}")
+            
+            time.sleep(0.3)
+        
+        self.finished.emit(True, f"下载完成！成功: {success_count} 只, 失败: {fail_count} 只", success_count, fail_count)
+
+
+
 class DataManageThread(QThread):
     """后台数据管理线程"""
     finished = Signal(list, dict)
@@ -251,68 +312,6 @@ class BacktestThread(QThread):
             
         except Exception as e:
             self.log_signal.emit(f"❌ 回测失败: {str(e)}")
-            self.finished.emit(False, f"回测失败: {str(e)}", {})
-    
-    def __init__(self, data_fetcher, stock_pool, start_date, data_type="daily", parent=None):
-        super().__init__(parent)
-        self.data_fetcher = data_fetcher
-        self.stock_pool = stock_pool
-        self.start_date = start_date
-        self.data_type = data_type  # daily/weekly/monthly/minute
-        self._is_cancelled = False
-    
-    def cancel(self):
-        self._is_cancelled = True
-    
-    def run(self):
-        success_count = 0
-        fail_count = 0
-        total = len(self.stock_pool)
-        
-        # 根据数据类型选择下载方法（fallback 到 daily 如果方法不存在）
-        type_map = {
-            "daily": "fetch_daily_data",
-            "weekly": "fetch_weekly_data",
-            "monthly": "fetch_monthly_data",
-            "minute": "fetch_minute_data"
-        }
-        fetch_method = type_map.get(self.data_type, "fetch_daily_data")
-        
-        # 检查方法是否存在，不存在则 fallback 到 daily
-        if not hasattr(self.data_fetcher, fetch_method):
-            self.log_signal.emit(f"⚠️ {self.data_type}类型暂不支持，使用日K线数据")
-            fetch_method = "fetch_daily_data"
-            self.data_type = "daily"
-        
-        self.log_signal.emit(f"开始下载 {total} 只股票的数据 ({self.data_type})...")
-        
-        for i, code in enumerate(self.stock_pool):
-            if self._is_cancelled:
-                self.log_signal.emit("下载已取消")
-                break
-            
-            self.progress.emit(i + 1, total, f"正在下载 {code}...")
-            
-            try:
-                fetch_func = getattr(self.data_fetcher, fetch_method)
-                df = fetch_func(code, start_date=self.start_date)
-                if df is not None and not df.empty:
-                    self.data_fetcher.save_data(df, code)
-                    success_count += 1
-                    self.log_signal.emit(f"✓ {code} 下载成功 ({len(df)} 条记录)")
-                else:
-                    fail_count += 1
-                    self.log_signal.emit(f"✗ {code} 无数据")
-            except Exception as e:
-                fail_count += 1
-                self.log_signal.emit(f"✗ {code} 下载失败: {str(e)}")
-            
-            time.sleep(0.3)
-        
-        self.finished.emit(True, f"下载完成！成功: {success_count} 只, 失败: {fail_count} 只", success_count, fail_count)
-
-
-
 
 
 class SidebarButton(QPushButton):
