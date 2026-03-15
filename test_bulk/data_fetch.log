@@ -1,0 +1,2 @@
+2026-03-14 21:04:13.164 | WARNING  | data_fetcher:_fetch_kline_netease:168 - [akshare(网易)] 获取股票 000001 数据失败: stock_zh_a_daily() got an unexpected keyword argument 'timeout'
+2026-03-14 21:04:38.536 | WARNING  | data_fetcher:_fetch_kline_netease:168 - [akshare(网易)] 获取股票 000001 数据失败: 'date'
