@@ -55,11 +55,12 @@ class DownloadThread(QThread):
     finished = Signal(bool, str, int, int)
     log_signal = Signal(str)
     
-    def __init__(self, data_fetcher, stock_pool, start_date, parent=None):
+    def __init__(self, data_fetcher, stock_pool, start_date, data_type="daily", parent=None):
         super().__init__(parent)
         self.data_fetcher = data_fetcher
         self.stock_pool = stock_pool
         self.start_date = start_date
+        self.data_type = data_type  # daily/weekly/monthly/minute
         self._is_cancelled = False
     
     def cancel(self):
@@ -70,7 +71,22 @@ class DownloadThread(QThread):
         fail_count = 0
         total = len(self.stock_pool)
         
-        self.log_signal.emit(f"开始下载 {total} 只股票的数据...")
+        # 根据数据类型选择下载方法（fallback 到 daily 如果方法不存在）
+        type_map = {
+            "daily": "fetch_daily_data",
+            "weekly": "fetch_weekly_data",
+            "monthly": "fetch_monthly_data",
+            "minute": "fetch_minute_data"
+        }
+        fetch_method = type_map.get(self.data_type, "fetch_daily_data")
+        
+        # 检查方法是否存在，不存在则 fallback 到 daily
+        if not hasattr(self.data_fetcher, fetch_method):
+            self.log_signal.emit(f"⚠️ {self.data_type}类型暂不支持，使用日K线数据")
+            fetch_method = "fetch_daily_data"
+            self.data_type = "daily"
+        
+        self.log_signal.emit(f"开始下载 {total} 只股票的数据 ({self.data_type})...")
         
         for i, code in enumerate(self.stock_pool):
             if self._is_cancelled:
@@ -80,7 +96,8 @@ class DownloadThread(QThread):
             self.progress.emit(i + 1, total, f"正在下载 {code}...")
             
             try:
-                df = self.data_fetcher.fetch_daily_data(code, start_date=self.start_date)
+                fetch_func = getattr(self.data_fetcher, fetch_method)
+                df = fetch_func(code, start_date=self.start_date)
                 if df is not None and not df.empty:
                     self.data_fetcher.save_data(df, code)
                     success_count += 1
@@ -537,9 +554,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "日期错误", "开始日期不能晚于结束日期！")
             return
         
-        self._start_download(stock_pool_type, start_date)
+        # 获取数据类型
+        data_type_text = self.home_data_type.currentText()
+        if "日K" in data_type_text:
+            data_type = "daily"
+        elif "周K" in data_type_text:
+            data_type = "weekly"
+        elif "月K" in data_type_text:
+            data_type = "monthly"
+        elif "分钟" in data_type_text:
+            data_type = "minute"
+        else:
+            data_type = "daily"
+        
+        self._start_download(stock_pool_type, start_date, data_type)
     
-    def _start_download(self, stock_pool_type, start_date):
+    def _start_download(self, stock_pool_type, start_date, data_type=None):
         """开始数据下载"""
         self.home_download_btn.setEnabled(False)
         self.home_progress.setVisible(True)
@@ -547,6 +577,20 @@ class MainWindow(QMainWindow):
         
         if self.data_fetcher is None:
             self.data_fetcher = DataFetcher(data_dir=self.data_status.get('data_path', 'stock_data_parquet'), use_parquet=True)
+        
+        # 获取数据类型（默认为 daily）
+        if data_type is None:
+            data_type_text = self.home_data_type.currentText()
+            if "日K" in data_type_text:
+                data_type = "daily"
+            elif "周K" in data_type_text:
+                data_type = "weekly"
+            elif "月K" in data_type_text:
+                data_type = "monthly"
+            elif "分钟" in data_type_text:
+                data_type = "minute"
+            else:
+                data_type = "daily"
         
         self.home_status_label.setText("正在获取股票列表...")
         
@@ -560,11 +604,15 @@ class MainWindow(QMainWindow):
             elif stock_pool_type == "创业板":
                 stock_pool = self.data_fetcher.get_stock_pool()[:100]
             elif stock_pool_type == "科创板":
-                stock_pool = []
                 QMessageBox.information(self, "提示", "科创板功能开发中")
+                self.home_download_btn.setEnabled(True)
+                self.home_progress.setVisible(False)
+                return
             elif stock_pool_type == "北证50":
-                stock_pool = []
                 QMessageBox.information(self, "提示", "北证50功能开发中")
+                self.home_download_btn.setEnabled(True)
+                self.home_progress.setVisible(False)
+                return
             else:
                 stock_pool = self.data_fetcher.get_stock_pool()
             
@@ -575,7 +623,7 @@ class MainWindow(QMainWindow):
             
             stock_pool = stock_pool[:100]
             
-            self.download_thread = DownloadThread(self.data_fetcher, stock_pool, start_date)
+            self.download_thread = DownloadThread(self.data_fetcher, stock_pool, start_date, data_type)
             self.download_thread.progress.connect(self._on_download_progress)
             self.download_thread.finished.connect(self._on_download_finished)
             self.download_thread.log_signal.connect(lambda msg: self.home_status_label.setText(msg))
