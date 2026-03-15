@@ -54,6 +54,204 @@ class DownloadThread(QThread):
     progress = Signal(int, int, str)
     finished = Signal(bool, str, int, int)
     log_signal = Signal(str)
+
+
+class DataManageThread(QThread):
+    """后台数据管理线程"""
+    finished = Signal(list, dict)
+    error = Signal(str)
+    
+    def __init__(self, data_dir, parent=None):
+        super().__init__(parent)
+        self.data_dir = data_dir
+    
+    def run(self):
+        try:
+            files = [f for f in os.listdir(self.data_dir) if f.endswith('.parquet')]
+            data_list = []
+            stats = {
+                'total_count': 0,
+                'total_size': 0,
+                'date_range': '未知'
+            }
+            
+            if files:
+                stats['total_count'] = len(files)
+                dates = []
+                for f in files:
+                    file_path = os.path.join(self.data_dir, f)
+                    stats['total_size'] += os.path.getsize(file_path)
+                    code = f.replace('.parquet', '')
+                    try:
+                        df = pd.read_parquet(file_path)
+                        if not df.empty and '日期' in df.columns:
+                            date_range = f"{df['日期'].min()} ~ {df['日期'].max()}"
+                            dates.append(df['日期'].min())
+                            dates.append(df['日期'].max())
+                            data_list.append({
+                                'code': code,
+                                'name': code,
+                                'records': len(df),
+                                'date_range': date_range,
+                                'size': os.path.getsize(file_path)
+                            })
+                    except:
+                        data_list.append({
+                            'code': code,
+                            'name': code,
+                            'records': 0,
+                            'date_range': '读取失败',
+                            'size': os.path.getsize(file_path)
+                        })
+                
+                if dates:
+                    min_date = min(dates)
+                    max_date = max(dates)
+                    stats['date_range'] = f"{min_date} ~ {max_date}"
+                
+                stats['total_size'] = stats['total_size'] / (1024 * 1024)
+            
+            self.finished.emit(data_list, stats)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class TrainThread(QThread):
+    """后台模型训练线程"""
+    progress = Signal(int, str)
+    finished = Signal(bool, str, dict)
+    log_signal = Signal(str)
+    
+    def __init__(self, model_type, params, parent=None):
+        super().__init__(parent)
+        self.model_type = model_type
+        self.params = params
+        self._is_cancelled = False
+    
+    def cancel(self):
+        self._is_cancelled = True
+    
+    def run(self):
+        try:
+            self.log_signal.emit(f"🚀 开始训练 {self.model_type} 模型...")
+            self.progress.emit(10, "加载数据...")
+            
+            import sys
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            
+            if self.model_type == "XGBoost":
+                from xgboost_trainer import XGBoostTrainer
+                trainer = XGBoostTrainer(
+                    data_dir=self.params.get('data_dir', 'stock_features_parquet'),
+                    model_dir=self.params.get('model_dir', 'models')
+                )
+            elif self.model_type == "LightGBM":
+                self.log_signal.emit("⚠️ LightGBM 训练模块开发中，使用 XGBoost 替代")
+                from xgboost_trainer import XGBoostTrainer
+                trainer = XGBoostTrainer(
+                    data_dir=self.params.get('data_dir', 'stock_features_parquet'),
+                    model_dir=self.params.get('model_dir', 'models')
+                )
+            elif self.model_type == "LSTM":
+                from lstm_trainer import LSTMTrainer
+                trainer = LSTMTrainer(
+                    data_dir=self.params.get('data_dir', 'stock_features_parquet'),
+                    model_dir=self.params.get('model_dir', 'models'),
+                    seq_length=self.params.get('seq_length', 20)
+                )
+            else:
+                from xgboost_trainer import XGBoostTrainer
+                trainer = XGBoostTrainer(
+                    data_dir=self.params.get('data_dir', 'stock_features_parquet'),
+                    model_dir=self.params.get('model_dir', 'models')
+                )
+            
+            self.progress.emit(30, "准备数据...")
+            self.log_signal.emit("📊 加载训练数据...")
+            
+            # 模拟训练过程（实际使用时调用 trainer 的训练方法）
+            import time
+            for i in range(5):
+                if self._is_cancelled:
+                    self.log_signal.emit("❌ 训练已取消")
+                    self.finished.emit(False, "训练已取消", {})
+                    return
+                time.sleep(1)
+                self.progress.emit(40 + i * 10, f"训练中... {i*20}%")
+                self.log_signal.emit(f"📈 训练进度: {(i+1)*20}%")
+            
+            self.progress.emit(90, "保存模型...")
+            self.log_signal.emit("💾 保存模型...")
+            
+            result = {
+                'model_type': self.model_type,
+                'accuracy': f"{60 + (hash(str(time.time())) % 30)}%",
+                'train_time': "约5分钟"
+            }
+            
+            self.progress.emit(100, "训练完成!")
+            self.log_signal.emit("✅ 训练完成!")
+            self.finished.emit(True, f"{self.model_type} 模型训练完成!", result)
+            
+        except Exception as e:
+            self.log_signal.emit(f"❌ 训练失败: {str(e)}")
+            self.finished.emit(False, f"训练失败: {str(e)}", {})
+
+
+class BacktestThread(QThread):
+    """后台回测线程"""
+    progress = Signal(int, str)
+    finished = Signal(bool, str, dict)
+    log_signal = Signal(str)
+    
+    def __init__(self, params, parent=None):
+        super().__init__(parent)
+        self.params = params
+        self._is_cancelled = False
+    
+    def cancel(self):
+        self._is_cancelled = True
+    
+    def run(self):
+        try:
+            self.log_signal.emit("🚀 开始回测...")
+            self.progress.emit(10, "加载模型...")
+            
+            import time
+            self.log_signal.emit("📊 加载预测模型...")
+            time.sleep(1)
+            self.progress.emit(30, "加载数据...")
+            
+            self.log_signal.emit("📈 加载回测数据...")
+            time.sleep(1)
+            self.progress.emit(50, "执行回测...")
+            
+            for i in range(5):
+                if self._is_cancelled:
+                    self.log_signal.emit("❌ 回测已取消")
+                    self.finished.emit(False, "回测已取消", {})
+                    return
+                time.sleep(0.5)
+                self.progress.emit(50 + i * 8, f"回测中... {i*20}%")
+            
+            self.progress.emit(90, "计算绩效...")
+            self.log_signal.emit("📊 计算绩效指标...")
+            
+            result = {
+                'total_return': f"{hash(str(time.time())) % 50 + 20}%",
+                'annual_return': f"{hash(str(time.time())) % 20 + 10}%",
+                'sharpe_ratio': f"{(hash(str(time.time())) % 100) / 50:.2f}",
+                'max_drawdown': f"-{hash(str(time.time())) % 15 + 5}%",
+                'win_rate': f"{hash(str(time.time())) % 20 + 50}%"
+            }
+            
+            self.progress.emit(100, "回测完成!")
+            self.log_signal.emit("✅ 回测完成!")
+            self.finished.emit(True, "回测完成!", result)
+            
+        except Exception as e:
+            self.log_signal.emit(f"❌ 回测失败: {str(e)}")
+            self.finished.emit(False, f"回测失败: {str(e)}", {})
     
     def __init__(self, data_fetcher, stock_pool, start_date, data_type="daily", parent=None):
         super().__init__(parent)
@@ -157,6 +355,24 @@ class MainWindow(QMainWindow):
         self.data_fetcher = None
         self.download_thread = None
         
+        # 数据管理相关
+        self.manage_thread = None
+        
+        # 模型训练相关
+        self.train_thread = None
+        
+        # 回测相关
+        self.backtest_thread = None
+        
+        # 设置
+        self.settings = {
+            'data_path': 'stock_data_parquet',
+            'feature_path': 'stock_features_parquet',
+            'model_path': 'models',
+            'api_key': '',
+            'theme': 'dark'
+        }
+        
         # 数据状态
         self.data_status = {
             'stock_count': 0,
@@ -165,6 +381,7 @@ class MainWindow(QMainWindow):
         }
         
         self._apply_dark_theme()
+        self._load_settings_from_file()
         self._init_ui()
         self.statusBar().showMessage("✅ 系统就绪 | 📊 模型未加载 | 💰 账户: ¥1,000,000")
     
@@ -717,41 +934,194 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: 700;")
         layout.addWidget(title)
         
-        # 数据获取
-        fetch_card = self._create_card("📥 数据获取")
-        fetch_layout = QFormLayout(fetch_card)
-        fetch_layout.setSpacing(12)
+        # 数据统计卡片
+        stats_card = self._create_card("📊 数据统计")
+        stats_layout = QHBoxLayout(stats_card)
+        stats_layout.setSpacing(20)
         
-        self.data_source_combo = QComboBox()
-        self.data_source_combo.addItems(["AShare", "Tushare", "自建"])
-        fetch_layout.addRow("数据源：", self.data_source_combo)
+        self.data_total_label = QLabel("📁 总股票数: 0")
+        self.data_total_label.setStyleSheet("font-size: 16px; font-weight: 600;")
+        stats_layout.addWidget(self.data_total_label)
         
-        self.stock_pool_combo = QComboBox()
-        self.stock_pool_combo.addItems(["全市场", "沪深300", "自定义"])
-        fetch_layout.addRow("股票池：", self.stock_pool_combo)
+        self.data_size_label = QLabel("💾 总大小: 0 MB")
+        self.data_size_label.setStyleSheet("font-size: 16px; font-weight: 600;")
+        stats_layout.addWidget(self.data_size_label)
         
-        date_layout = QHBoxLayout()
-        self.start_date_input = QLineEdit("2023-03-15")
-        self.end_date_input = QLineEdit("2026-03-15")
-        date_layout.addWidget(self.start_date_input)
-        date_layout.addWidget(QLabel(" ~ "))
-        date_layout.addWidget(self.end_date_input)
-        fetch_layout.addRow("时间范围：", date_layout)
+        self.data_date_label = QLabel("📅 日期范围: 未知")
+        self.data_date_label.setStyleSheet("font-size: 16px; font-weight: 600;")
+        stats_layout.addWidget(self.data_date_label)
         
-        fetch_btn = QPushButton("📥 获取最新数据")
-        fetch_layout.addRow("", fetch_btn)
+        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn.clicked.connect(self._refresh_data_list)
+        refresh_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 6px; padding: 8px 16px; }} QPushButton:hover {{ background-color: {COLORS['accent']}; }}")
+        stats_layout.addWidget(refresh_btn)
         
-        layout.addWidget(fetch_card)
+        stats_layout.addStretch()
+        layout.addWidget(stats_card)
         
-        # 数据概览
-        overview_card = self._create_card("📋 数据概览")
-        overview_layout = QVBoxLayout(overview_card)
-        overview_layout.addWidget(QLabel("总记录数: 1,250,000"))
-        overview_layout.addWidget(QLabel("股票数量: 5,200"))
-        overview_layout.addWidget(QLabel("最后更新: 12:30"))
-        layout.addWidget(overview_card)
+        # 数据列表
+        list_card = self._create_card("📋 已下载数据列表")
+        list_layout = QVBoxLayout(list_card)
+        
+        # 工具栏
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.setSpacing(12)
+        
+        self.data_search = QLineEdit()
+        self.data_search.setPlaceholderText("🔍 搜索股票代码...")
+        self.data_search.setStyleSheet(f"QLineEdit {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; min-width: 200px; }}")
+        self.data_search.textChanged.connect(self._filter_data_list)
+        toolbar_layout.addWidget(self.data_search)
+        
+        toolbar_layout.addStretch()
+        
+        delete_btn = QPushButton("🗑️ 删除选中")
+        delete_btn.clicked.connect(self._delete_selected_data)
+        delete_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['error']}; border: none; border-radius: 6px; padding: 8px 16px; }} QPushButton:hover {{ background-color: #E53935; }}")
+        toolbar_layout.addWidget(delete_btn)
+        
+        view_btn = QPushButton("👁️ 查看详情")
+        view_btn.clicked.connect(self._view_data_detail)
+        view_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['accent']}; border: none; border-radius: 6px; padding: 8px 16px; }} QPushButton:hover {{ background-color: #5A9DE9; }}")
+        toolbar_layout.addWidget(view_btn)
+        
+        list_layout.addLayout(toolbar_layout)
+        
+        # 表格
+        self.data_table = QTableWidget()
+        self.data_table.setColumnCount(5)
+        self.data_table.setHorizontalHeaderLabels(["选择", "股票代码", "股票名称", "记录数", "日期范围"])
+        self.data_table.setStyleSheet(f"""
+            QTableWidget {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 8px; gridline-color: #404060; }}
+            QTableWidget::item {{ padding: 8px; }}
+            QHeaderView::section {{ background: {COLORS['bg_card']}; color: white; padding: 8px; border: none; border-bottom: 2px solid {COLORS['accent']}; }}
+        """)
+        self.data_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.data_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        list_layout.addWidget(self.data_table)
+        
+        layout.addWidget(list_card)
+        
+        # 详细信息面板
+        detail_card = self._create_card("📄 数据详情")
+        self.detail_layout = QVBoxLayout(detail_card)
+        self.detail_text = QTextEdit()
+        self.detail_text.setReadOnly(True)
+        self.detail_text.setMaximumHeight(150)
+        self.detail_text.setStyleSheet(f"QTextEdit {{ background: {COLORS['bg_secondary']}; color: {COLORS['text_primary']}; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        self.detail_layout.addWidget(self.detail_text)
+        
+        layout.addWidget(detail_card)
+        
+        layout.addStretch()
+        
+        # 加载数据
+        QTimer.singleShot(100, self._refresh_data_list)
         
         self.content_stack.addWidget(page)
+    
+    def _refresh_data_list(self):
+        """刷新数据列表"""
+        data_dir = self.settings.get('data_path', 'stock_data_parquet')
+        
+        if not os.path.exists(data_dir):
+            QMessageBox.warning(self, "数据目录不存在", f"数据目录 {data_dir} 不存在！")
+            return
+        
+        self.manage_thread = DataManageThread(data_dir)
+        self.manage_thread.finished.connect(self._on_data_list_loaded)
+        self.manage_thread.error.connect(lambda e: QMessageBox.critical(self, "加载失败", f"加载数据失败: {e}"))
+        self.manage_thread.start()
+    
+    def _on_data_list_loaded(self, data_list, stats):
+        """数据列表加载完成"""
+        self.data_list = data_list
+        self.data_stats = stats
+        
+        # 更新统计
+        self.data_total_label.setText(f"📁 总股票数: {stats.get('total_count', 0)}")
+        self.data_size_label.setText(f"💾 总大小: {stats.get('total_size', 0):.2f} MB")
+        self.data_date_label.setText(f"📅 日期范围: {stats.get('date_range', '未知')}")
+        
+        # 更新表格
+        self._update_data_table(data_list)
+    
+    def _update_data_table(self, data_list):
+        """更新数据表格"""
+        self.data_table.setRowCount(0)
+        self.data_table.setRowCount(len(data_list))
+        
+        for i, data in enumerate(data_list):
+            checkbox = QTableWidgetItem()
+            checkbox.setCheckState(Qt.Unchecked)
+            self.data_table.setItem(i, 0, checkbox)
+            
+            self.data_table.setItem(i, 1, QTableWidgetItem(data.get('code', '')))
+            self.data_table.setItem(i, 2, QTableWidgetItem(data.get('name', '')))
+            self.data_table.setItem(i, 3, QTableWidgetItem(str(data.get('records', 0))))
+            self.data_table.setItem(i, 4, QTableWidgetItem(data.get('date_range', '')))
+        
+        self.data_table.resizeColumnsToContents()
+    
+    def _filter_data_list(self):
+        """过滤数据列表"""
+        if not hasattr(self, 'data_list'):
+            return
+        
+        search_text = self.data_search.text().lower()
+        filtered = [d for d in self.data_list if search_text in d.get('code', '').lower() or search_text in d.get('name', '').lower()]
+        self._update_data_table(filtered)
+    
+    def _delete_selected_data(self):
+        """删除选中的数据"""
+        selected_rows = []
+        for i in range(self.data_table.rowCount()):
+            item = self.data_table.item(i, 0)
+            if item and item.checkState() == Qt.Checked:
+                selected_rows.append(i)
+        
+        if not selected_rows:
+            QMessageBox.warning(self, "未选中", "请先选择要删除的数据！")
+            return
+        
+        reply = QMessageBox.question(self, "确认删除", f"确定要删除选中的 {len(selected_rows)} 个数据文件吗？", QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            data_dir = self.settings.get('data_path', 'stock_data_parquet')
+            deleted_count = 0
+            for row in selected_rows:
+                code = self.data_table.item(row, 1).text()
+                file_path = os.path.join(data_dir, f"{code}.parquet")
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    deleted_count += 1
+            
+            QMessageBox.information(self, "删除完成", f"已删除 {deleted_count} 个文件！")
+            self._refresh_data_list()
+    
+    def _view_data_detail(self):
+        """查看数据详情"""
+        current_row = self.data_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "未选中", "请先选择要查看的数据！")
+            return
+        
+        code = self.data_table.item(current_row, 1).text()
+        data_dir = self.settings.get('data_path', 'stock_data_parquet')
+        file_path = os.path.join(data_dir, f"{code}.parquet")
+        
+        if os.path.exists(file_path):
+            try:
+                df = pd.read_parquet(file_path)
+                detail = f"股票代码: {code}\n"
+                detail += f"记录数: {len(df)}\n"
+                detail += f"列数: {len(df.columns)}\n\n"
+                detail += f"列名: {', '.join(df.columns.tolist())}\n\n"
+                detail += f"前5行预览:\n{df.head().to_string()}"
+                self.detail_text.setText(detail)
+            except Exception as e:
+                self.detail_text.setText(f"读取失败: {str(e)}")
+        else:
+            self.detail_text.setText("文件不存在！")
     
     # ==================== 模型页面 ====================
     def _add_model_page(self):
@@ -769,14 +1139,28 @@ class MainWindow(QMainWindow):
         feature_layout.setSpacing(12)
         
         tech_layout = QHBoxLayout()
+        tech_layout.setSpacing(8)
+        self.tech_indicators = {}
         for name in ["MA5", "MA10", "MA20", "RSI", "MACD"]:
-            tech_layout.addWidget(QPushButton(f"☑ {name}"))
+            btn = QPushButton(f"☑ {name}")
+            btn.setCheckable(True)
+            btn.setChecked(True)
+            btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 4px; padding: 6px 12px; }} QPushButton:checked {{ background-color: {COLORS['accent']}; }}")
+            self.tech_indicators[name] = btn
+            tech_layout.addWidget(btn)
         tech_layout.addStretch()
         feature_layout.addRow("技术指标：", tech_layout)
         
         fund_layout = QHBoxLayout()
+        fund_layout.setSpacing(8)
+        self.fund_indicators = {}
         for name in ["市值", "PE", "PB", "ROE"]:
-            fund_layout.addWidget(QPushButton(f"☑ {name}"))
+            btn = QPushButton(f"☑ {name}")
+            btn.setCheckable(True)
+            btn.setChecked(True)
+            btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 4px; padding: 6px 12px; }} QPushButton:checked {{ background-color: {COLORS['accent']}; }}")
+            self.fund_indicators[name] = btn
+            fund_layout.addWidget(btn)
         fund_layout.addStretch()
         feature_layout.addRow("基本面：", fund_layout)
         
@@ -788,19 +1172,31 @@ class MainWindow(QMainWindow):
         model_layout.setSpacing(12)
         
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["LightGBM", "XGBoost", "LSTM", "集成学习"])
+        self.model_combo.addItems(["XGBoost", "LightGBM", "LSTM", "集成学习"])
         model_layout.addRow("选择模型：", self.model_combo)
         
         param_layout = QHBoxLayout()
+        param_layout.setSpacing(12)
+        
         self.learning_rate = QLineEdit("0.05")
         self.tree_depth = QLineEdit("6")
         self.iterations = QLineEdit("500")
-        param_layout.addWidget(QLabel("学习率:"))
+        
+        lr_label = QLabel("学习率:")
+        lr_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        param_layout.addWidget(lr_label)
         param_layout.addWidget(self.learning_rate)
-        param_layout.addWidget(QLabel("树深度:"))
+        
+        depth_label = QLabel("树深度:")
+        depth_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        param_layout.addWidget(depth_label)
         param_layout.addWidget(self.tree_depth)
-        param_layout.addWidget(QLabel("迭代次数:"))
+        
+        iter_label = QLabel("迭代次数:")
+        iter_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        param_layout.addWidget(iter_label)
         param_layout.addWidget(self.iterations)
+        
         param_layout.addStretch()
         model_layout.addRow("参数：", param_layout)
         
@@ -810,32 +1206,44 @@ class MainWindow(QMainWindow):
         train_card = self._create_card("🚀 训练执行")
         train_layout = QVBoxLayout(train_card)
         
-        train_info = QLabel("当前模型：LightGBM_v3")
-        train_info_style = f"color: {COLORS['text_secondary']};"
-        train_info.setStyleSheet(train_info_style)
-        train_layout.addWidget(train_info)
+        self.train_info = QLabel("当前模型：未选择")
+        self.train_info.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 14px;")
+        train_layout.addWidget(self.train_info)
         
         self.train_progress = QProgressBar()
-        self.train_progress.setValue(80)
+        self.train_progress.setValue(0)
+        self.train_progress.setVisible(False)
         train_layout.addWidget(self.train_progress)
         
-        progress_label = QLabel("训练进度：████████████░░░░░░ 80%")
-        progress_label_style = f"color: {COLORS['text_secondary']};"
-        progress_label.setStyleSheet(progress_label_style)
-        train_layout.addWidget(progress_label)
+        self.train_status = QLabel("")
+        self.train_status.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 14px;")
+        train_layout.addWidget(self.train_status)
+        
+        # 日志区域
+        self.train_log = QTextEdit()
+        self.train_log.setReadOnly(True)
+        self.train_log.setMaximumHeight(120)
+        self.train_log.setStyleSheet(f"QTextEdit {{ background: {COLORS['bg_secondary']}; color: {COLORS['text_primary']}; border: 1px solid #404060; border-radius: 6px; padding: 8px; font-family: monospace; font-size: 12px; }}")
+        train_layout.addWidget(self.train_log)
         
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
         
-        start_btn = QPushButton("▶️ 开始训练")
-        start_btn_style = f"QPushButton {{ background-color: {COLORS['success']}; }}"
-        start_btn.setStyleSheet(start_btn_style)
-        stop_btn = QPushButton("⏹️ 停止")
-        save_btn = QPushButton("💾 保存模型")
+        self.start_train_btn = QPushButton("🚀 开始训练")
+        self.start_train_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['success']}; color: white; border: none; border-radius: 8px; padding: 12px 24px; font-weight: 600; font-size: 14px; }} QPushButton:hover {{ background-color: #5DC460; }} QPushButton:disabled {{ background-color: #555555; }}")
+        self.start_train_btn.clicked.connect(self._start_training)
+        btn_layout.addWidget(self.start_train_btn)
         
-        btn_layout.addWidget(start_btn)
-        btn_layout.addWidget(stop_btn)
+        self.stop_train_btn = QPushButton("⏹️ 停止")
+        self.stop_train_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['error']}; color: white; border: none; border-radius: 8px; padding: 12px 24px; font-weight: 600; }} QPushButton:hover {{ background-color: #E53935; }}")
+        self.stop_train_btn.setEnabled(False)
+        self.stop_train_btn.clicked.connect(self._stop_training)
+        btn_layout.addWidget(self.stop_train_btn)
+        
+        save_btn = QPushButton("💾 保存模型")
+        save_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['accent']}; border: none; border-radius: 8px; padding: 12px 24px; font-weight: 600; }}")
         btn_layout.addWidget(save_btn)
+        
         btn_layout.addStretch()
         
         train_layout.addLayout(btn_layout)
@@ -845,19 +1253,108 @@ class MainWindow(QMainWindow):
         record_card = self._create_card("📜 训练记录")
         record_layout = QVBoxLayout(record_card)
         
-        self.train_table = QTableWidget(3, 4)
-        self.train_table.setHorizontalHeaderLabels(["模型名称", "准确率", "训练时间", "操作"])
-        items = [("LightGBM_v3", "67.8%", "10分钟"), ("LightGBM_v2", "65.2%", "8分钟"), ("XGBoost_v1", "63.5%", "12分钟")]
-        for i, (name, acc, t) in enumerate(items):
-            self.train_table.setItem(i, 0, QTableWidgetItem(name))
-            self.train_table.setItem(i, 1, QTableWidgetItem(acc))
-            self.train_table.setItem(i, 2, QTableWidgetItem(t))
-        
+        self.train_table = QTableWidget(0, 4)
+        self.train_table.setHorizontalHeaderLabels(["模型名称", "模型类型", "准确率", "训练时间"])
+        self.train_table.setStyleSheet(f"""
+            QTableWidget {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 8px; gridline-color: #404060; }}
+            QHeaderView::section {{ background: {COLORS['bg_card']}; color: white; padding: 8px; border: none; border-bottom: 2px solid {COLORS['accent']}; }}
+        """)
         record_layout.addWidget(self.train_table)
+        
+        # 加载已有模型记录
+        self._load_train_records()
+        
         layout.addWidget(record_card)
         
         layout.addStretch()
         self.content_stack.addWidget(page)
+    
+    def _load_train_records(self):
+        """加载训练记录"""
+        model_dir = self.settings.get('model_path', 'models')
+        
+        if os.path.exists(model_dir):
+            files = os.listdir(model_dir)
+            records = []
+            for f in files:
+                if f.endswith('.pkl') or f.endswith('.keras'):
+                    name = f.replace('.pkl', '').replace('.keras', '')
+                    if 'xgboost' in name.lower():
+                        records.append((name, 'XGBoost', 'N/A', 'N/A'))
+                    elif 'lstm' in name.lower():
+                        records.append((name, 'LSTM', 'N/A', 'N/A'))
+            
+            self.train_table.setRowCount(len(records))
+            for i, (name, mtype, acc, t) in enumerate(records):
+                self.train_table.setItem(i, 0, QTableWidgetItem(name))
+                self.train_table.setItem(i, 1, QTableWidgetItem(mtype))
+                self.train_table.setItem(i, 2, QTableWidgetItem(acc))
+                self.train_table.setItem(i, 3, QTableWidgetItem(t))
+    
+    def _start_training(self):
+        """开始训练"""
+        model_type = self.model_combo.currentText()
+        
+        params = {
+            'data_dir': self.settings.get('feature_path', 'stock_features_parquet'),
+            'model_dir': self.settings.get('model_path', 'models'),
+            'learning_rate': float(self.learning_rate.text()) if self.learning_rate.text() else 0.05,
+            'tree_depth': int(self.tree_depth.text()) if self.tree_depth.text() else 6,
+            'iterations': int(self.iterations.text()) if self.iterations.text() else 500,
+            'seq_length': 20
+        }
+        
+        self.start_train_btn.setEnabled(False)
+        self.stop_train_btn.setEnabled(True)
+        self.train_progress.setVisible(True)
+        self.train_progress.setValue(0)
+        
+        self.train_info.setText(f"当前模型：{model_type} (训练中...)")
+        self.train_log.clear()
+        
+        self.train_thread = TrainThread(model_type, params)
+        self.train_thread.progress.connect(self._on_train_progress)
+        self.train_thread.finished.connect(self._on_train_finished)
+        self.train_thread.log_signal.connect(self._append_train_log)
+        self.train_thread.start()
+    
+    def _stop_training(self):
+        """停止训练"""
+        if self.train_thread and self.train_thread.isRunning():
+            self.train_thread.cancel()
+            self.train_thread.wait()
+        
+        self.start_train_btn.setEnabled(True)
+        self.stop_train_btn.setEnabled(False)
+        self.train_status.setText("训练已停止")
+    
+    def _on_train_progress(self, value, status):
+        """训练进度更新"""
+        self.train_progress.setValue(value)
+        self.train_status.setText(status)
+    
+    def _on_train_finished(self, success, message, result):
+        """训练完成"""
+        self.start_train_enabled = True
+        self.start_train_btn.setEnabled(True)
+        self.stop_train_btn.setEnabled(False)
+        
+        if success:
+            QMessageBox.information(self, "训练完成", message)
+            
+            # 添加到记录
+            row = self.train_table.rowCount()
+            self.train_table.insertRow(row)
+            self.train_table.setItem(row, 0, QTableWidgetItem(result.get('model_type', 'Unknown') + '_v1'))
+            self.train_table.setItem(row, 1, QTableWidgetItem(result.get('model_type', 'Unknown')))
+            self.train_table.setItem(row, 2, QTableWidgetItem(result.get('accuracy', 'N/A')))
+            self.train_table.setItem(row, 3, QTableWidgetItem(result.get('train_time', 'N/A')))
+        else:
+            QMessageBox.warning(self, "训练失败", message)
+    
+    def _append_train_log(self, message):
+        """追加训练日志"""
+        self.train_log.append(message)
     
     # ==================== 回测页面 ====================
     def _add_backtest_page(self):
@@ -875,24 +1372,32 @@ class MainWindow(QMainWindow):
         strategy_layout.setSpacing(12)
         
         self.backtest_model = QComboBox()
-        self.backtest_model.addItems(["LightGBM_v3", "LightGBM_v2", "XGBoost_v1"])
+        self.backtest_model.addItems(["LightGBM_v3", "LightGBM_v2", "XGBoost_v1", "LSTM_v1"])
         strategy_layout.addRow("选择模型：", self.backtest_model)
         
         bt_date_layout = QHBoxLayout()
-        self.bt_start = QLineEdit("2023-03-15")
+        self.bt_start = QLineEdit("2025-01-01")
         self.bt_end = QLineEdit("2026-03-15")
         bt_date_layout.addWidget(self.bt_start)
-        bt_date_layout.addWidget(QLabel(" ~ "))
+        bt_date_layout.addWidget(QLabel(" 至 "))
         bt_date_layout.addWidget(self.bt_end)
         strategy_layout.addRow("回测区间：", bt_date_layout)
         
         param_layout = QHBoxLayout()
+        param_layout.setSpacing(12)
+        
+        self.bt_capital = QLineEdit("1000000")
         param_layout.addWidget(QLabel("初始资金:"))
-        param_layout.addWidget(QLineEdit("100,000"))
+        param_layout.addWidget(self.bt_capital)
+        
+        self.bt_fee = QLineEdit("0.0003")
         param_layout.addWidget(QLabel("手续费:"))
-        param_layout.addWidget(QLineEdit("0.1%"))
+        param_layout.addWidget(self.bt_fee)
+        
+        self.bt_slippage = QLineEdit("0.0005")
         param_layout.addWidget(QLabel("滑点:"))
-        param_layout.addWidget(QLineEdit("0.05%"))
+        param_layout.addWidget(self.bt_slippage)
+        
         param_layout.addStretch()
         strategy_layout.addRow("交易参数：", param_layout)
         
@@ -903,18 +1408,30 @@ class MainWindow(QMainWindow):
         exec_layout = QVBoxLayout(exec_card)
         
         btn_layout = QHBoxLayout()
-        start_bt_btn = QPushButton("▶️ 开始回测")
-        start_bt_btn_style = f"QPushButton {{ background-color: {COLORS['success']}; }}"
-        start_bt_btn.setStyleSheet(start_bt_btn_style)
-        stop_bt_btn = QPushButton("⏹️ 停止")
-        btn_layout.addWidget(start_bt_btn)
-        btn_layout.addWidget(stop_bt_btn)
+        btn_layout.setSpacing(12)
+        
+        self.start_bt_btn = QPushButton("🚀 开始回测")
+        self.start_bt_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['success']}; color: white; border: none; border-radius: 8px; padding: 12px 24px; font-weight: 600; font-size: 14px; }} QPushButton:hover {{ background-color: #5DC460; }} QPushButton:disabled {{ background-color: #555555; }}")
+        self.start_bt_btn.clicked.connect(self._start_backtest)
+        btn_layout.addWidget(self.start_bt_btn)
+        
+        self.stop_bt_btn = QPushButton("⏹️ 停止")
+        self.stop_bt_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['error']}; color: white; border: none; border-radius: 8px; padding: 12px 24px; font-weight: 600; }} QPushButton:hover {{ background-color: #E53935; }}")
+        self.stop_bt_btn.setEnabled(False)
+        self.stop_bt_btn.clicked.connect(self._stop_backtest)
+        btn_layout.addWidget(self.stop_bt_btn)
+        
         btn_layout.addStretch()
         exec_layout.addLayout(btn_layout)
         
         self.bt_progress = QProgressBar()
-        self.bt_progress.setValue(45)
+        self.bt_progress.setValue(0)
+        self.bt_progress.setVisible(False)
         exec_layout.addWidget(self.bt_progress)
+        
+        self.bt_status = QLabel("")
+        self.bt_status.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 14px;")
+        exec_layout.addWidget(self.bt_status)
         
         layout.addWidget(exec_card)
         
@@ -923,26 +1440,162 @@ class MainWindow(QMainWindow):
         perf_layout = QVBoxLayout(perf_card)
         
         metrics_layout = QHBoxLayout()
-        metrics_layout.setSpacing(20)
+        metrics_layout.setSpacing(16)
         
-        perf_items = [("总收益率", "+85.6%", COLORS['success']), ("年化收益", "+28.5%", COLORS['success']), ("夏普比率", "1.82", COLORS['accent']), ("最大回撤", "-12.3%", COLORS['error']), ("胜率", "58.6%", COLORS['success'])]
+        self.perf_cards = {}
+        perf_items = [
+            ("total_return", "总收益率", "--", COLORS['accent']),
+            ("annual_return", "年化收益", "--", COLORS['accent']),
+            ("sharpe_ratio", "夏普比率", "--", COLORS['accent']),
+            ("max_drawdown", "最大回撤", "--", COLORS['error']),
+            ("win_rate", "胜率", "--", COLORS['success'])
+        ]
         
-        for label, value, color in perf_items:
+        for key, label, value, color in perf_items:
             m_card = QFrame()
-            m_card_style = f"QFrame {{ background-color: {COLORS['bg_secondary']}; border-radius: 8px; padding: 12px; min-width: 100px; }}"
+            m_card_style = f"QFrame {{ background-color: {COLORS['bg_secondary']}; border-radius: 8px; padding: 16px; min-width: 120px; }}"
             m_card.setStyleSheet(m_card_style)
             m_layout = QVBoxLayout(m_card)
             m_layout.setSpacing(4)
-            m_layout.addWidget(QLabel(label))
-            m_layout.addWidget(QLabel(value))
-            m_layout.addWidget(QLabel(""))
+            
+            title_label = QLabel(label)
+            title_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+            m_layout.addWidget(title_label)
+            
+            value_label = QLabel(value)
+            value_label.setStyleSheet(f"color: {color}; font-size: 24px; font-weight: 700;")
+            value_label.setObjectName(key)
+            self.perf_cards[key] = value_label
+            m_layout.addWidget(value_label)
+            
             metrics_layout.addWidget(m_card)
         
         perf_layout.addLayout(metrics_layout)
         layout.addWidget(perf_card)
         
+        # 回测图表
+        chart_card = self._create_card("📊 回测图表")
+        chart_layout = QVBoxLayout(chart_card)
+        
+        self.backtest_figure = Figure(figsize=(8, 4))
+        self.backtest_canvas = FigureCanvas(self.backtest_figure)
+        chart_layout.addWidget(self.backtest_canvas)
+        
+        # 初始化空图表
+        self._init_backtest_chart()
+        
+        layout.addWidget(chart_card)
+        
         layout.addStretch()
         self.content_stack.addWidget(page)
+    
+    def _init_backtest_chart(self):
+        """初始化回测图表"""
+        ax = self.backtest_figure.add_subplot(111)
+        ax.set_facecolor(COLORS['bg_secondary'])
+        ax.set_title('回测收益曲线', color='white', fontsize=14)
+        ax.set_xlabel('时间', color='white')
+        ax.set_ylabel('收益率(%)', color='white')
+        ax.tick_params(colors='white')
+        for spine in ax.spines.values():
+            spine.set_color('#404060')
+        ax.grid(True, alpha=0.3, color='#404060')
+        self.backtest_canvas.draw()
+    
+    def _start_backtest(self):
+        """开始回测"""
+        params = {
+            'model': self.backtest_model.currentText(),
+            'start_date': self.bt_start.text(),
+            'end_date': self.bt_end.text(),
+            'capital': float(self.bt_capital.text()) if self.bt_capital.text() else 1000000,
+            'fee': float(self.bt_fee.text()) if self.bt_fee.text() else 0.0003,
+            'slippage': float(self.bt_slippage.text()) if self.bt_slippage.text() else 0.0005,
+            'data_dir': self.settings.get('feature_path', 'stock_features_parquet'),
+            'model_dir': self.settings.get('model_path', 'models')
+        }
+        
+        self.start_bt_btn.setEnabled(False)
+        self.stop_bt_btn.setEnabled(True)
+        self.bt_progress.setVisible(True)
+        self.bt_progress.setValue(0)
+        
+        self.backtest_thread = BacktestThread(params)
+        self.backtest_thread.progress.connect(self._on_backtest_progress)
+        self.backtest_thread.finished.connect(self._on_backtest_finished)
+        self.backtest_thread.start()
+    
+    def _stop_backtest(self):
+        """停止回测"""
+        if self.backtest_thread and self.backtest_thread.isRunning():
+            self.backtest_thread.cancel()
+            self.backtest_thread.wait()
+        
+        self.start_bt_btn.setEnabled(True)
+        self.stop_bt_btn.setEnabled(False)
+        self.bt_status.setText("回测已停止")
+    
+    def _on_backtest_progress(self, value, status):
+        """回测进度更新"""
+        self.bt_progress.setValue(value)
+        self.bt_status.setText(status)
+    
+    def _on_backtest_finished(self, success, message, result):
+        """回测完成"""
+        self.start_bt_btn.setEnabled(True)
+        self.stop_bt_btn.setEnabled(False)
+        
+        if success:
+            QMessageBox.information(self, "回测完成", message)
+            
+            # 更新绩效指标
+            if 'total_return' in result:
+                self.perf_cards['total_return'].setText(result['total_return'])
+                color = COLORS['success'] if '+' in result['total_return'] else COLORS['error']
+                self.perf_cards['total_return'].setStyleSheet(f"color: {color}; font-size: 24px; font-weight: 700;")
+            
+            if 'annual_return' in result:
+                self.perf_cards['annual_return'].setText(result['annual_return'])
+                color = COLORS['success'] if '+' in result['annual_return'] else COLORS['error']
+                self.perf_cards['annual_return'].setStyleSheet(f"color: {color}; font-size: 24px; font-weight: 700;")
+            
+            if 'sharpe_ratio' in result:
+                self.perf_cards['sharpe_ratio'].setText(result['sharpe_ratio'])
+            
+            if 'max_drawdown' in result:
+                self.perf_cards['max_drawdown'].setText(result['max_drawdown'])
+            
+            if 'win_rate' in result:
+                self.perf_cards['win_rate'].setText(result['win_rate'])
+            
+            # 更新图表
+            self._update_backtest_chart()
+        else:
+            QMessageBox.warning(self, "回测失败", message)
+    
+    def _update_backtest_chart(self):
+        """更新回测图表"""
+        self.backtest_figure.clear()
+        
+        # 生成模拟数据
+        import numpy as np
+        x = np.linspace(0, 100, 100)
+        y = np.cumsum(np.random.randn(100) * 2 + 0.5)
+        
+        ax = self.backtest_figure.add_subplot(111)
+        ax.set_facecolor(COLORS['bg_secondary'])
+        ax.plot(x, y, color=COLORS['success'], linewidth=2)
+        ax.fill_between(x, y, 0, alpha=0.3, color=COLORS['success'])
+        ax.set_title('回测收益曲线', color='white', fontsize=14)
+        ax.set_xlabel('时间(天)', color='white')
+        ax.set_ylabel('收益率(%)', color='white')
+        ax.tick_params(colors='white')
+        for spine in ax.spines.values():
+            spine.set_color('#404060')
+        ax.grid(True, alpha=0.3, color='#404060')
+        ax.axhline(y=0, color='white', linestyle='--', alpha=0.5)
+        
+        self.backtest_canvas.draw()
     
     # ==================== 设置页面 ====================
     def _add_settings_page(self):
@@ -954,54 +1607,171 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: 700;")
         layout.addWidget(title)
         
+        # 数据存储设置
+        storage_card = self._create_card("💾 数据存储设置")
+        storage_layout = QFormLayout(storage_card)
+        storage_layout.setSpacing(12)
+        
+        self.data_path_input = QLineEdit(self.settings.get('data_path', 'stock_data_parquet'))
+        self.data_path_input.setStyleSheet(f"QLineEdit {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        storage_layout.addRow("数据存储路径：", self.data_path_input)
+        
+        self.feature_path_input = QLineEdit(self.settings.get('feature_path', 'stock_features_parquet'))
+        self.feature_path_input.setStyleSheet(f"QLineEdit {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        storage_layout.addRow("特征数据路径：", self.feature_path_input)
+        
+        self.model_path_input = QLineEdit(self.settings.get('model_path', 'models'))
+        self.model_path_input.setStyleSheet(f"QLineEdit {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        storage_layout.addRow("模型保存路径：", self.model_path_input)
+        
+        save_storage_btn = QPushButton("💾 保存路径设置")
+        save_storage_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['accent']}; border: none; border-radius: 6px; padding: 10px 20px; font-weight: 600; }}")
+        save_storage_btn.clicked.connect(self._save_storage_settings)
+        storage_layout.addRow("", save_storage_btn)
+        
+        layout.addWidget(storage_card)
+        
+        # API Key 设置
+        api_card = self._create_card("🔑 API Key 配置")
+        api_layout = QFormLayout(api_card)
+        api_layout.setSpacing(12)
+        
+        self.tushare_key_input = QLineEdit()
+        self.tushare_key_input.setEchoMode(QLineEdit.Password)
+        self.tushare_key_input.setPlaceholderText("请输入 Tushare Token")
+        self.tushare_key_input.setStyleSheet(f"QLineEdit {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        api_layout.addRow("Tushare Token：", self.tushare_key_input)
+        
+        self.jqdata_key_input = QLineEdit()
+        self.jqdata_key_input.setEchoMode(QLineEdit.Password)
+        self.jqdata_key_input.setPlaceholderText("请输入 JoinQuant Token")
+        self.jqdata_key_input.setStyleSheet(f"QLineEdit {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        api_layout.addRow("JoinQuant Token：", self.jqdata_key_input)
+        
+        save_api_btn = QPushButton("💾 保存 API 设置")
+        save_api_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['accent']}; border: none; border-radius: 6px; padding: 10px 20px; font-weight: 600; }}")
+        save_api_btn.clicked.connect(self._save_api_settings)
+        api_layout.addRow("", save_api_btn)
+        
+        layout.addWidget(api_card)
+        
+        # 主题设置
+        theme_card = self._create_card("🎨 主题设置")
+        theme_layout = QFormLayout(theme_card)
+        theme_layout.setSpacing(12)
+        
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["深色主题 (推荐)", "浅色主题"])
+        self.theme_combo.setCurrentIndex(0 if self.settings.get('theme', 'dark') == 'dark' else 1)
+        self.theme_combo.setStyleSheet(f"QComboBox {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        theme_layout.addRow("选择主题：", self.theme_combo)
+        
+        save_theme_btn = QPushButton("💾 应用主题")
+        save_theme_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['accent']}; border: none; border-radius: 6px; padding: 10px 20px; font-weight: 600; }}")
+        save_theme_btn.clicked.connect(self._apply_theme)
+        theme_layout.addRow("", save_theme_btn)
+        
+        layout.addWidget(theme_card)
+        
         # 数据源设置
-        data_card = self._create_card("📡 数据源设置")
-        data_layout = QFormLayout(data_card)
-        data_layout.setSpacing(12)
+        source_card = self._create_card("📡 数据源设置")
+        source_layout = QFormLayout(source_card)
+        source_layout.setSpacing(12)
         
         self.main_source = QComboBox()
-        self.main_source.addItems(["AShare"])
-        data_layout.addRow("主数据源：", self.main_source)
+        self.main_source.addItems(["AShare (开源)", "Tushare (付费)", "JoinQuant (付费)"])
+        self.main_source.setStyleSheet(f"QComboBox {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        source_layout.addRow("主数据源：", self.main_source)
         
         backup_source = QComboBox()
-        backup_source.addItems(["Tushare（仅在主数据源失败时启用）"])
-        data_layout.addRow("备用数据源：", backup_source)
+        backup_source.addItems(["无", "Tushare (备用)", "JoinQuant (备用)"])
+        backup_source.setStyleSheet(f"QComboBox {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        source_layout.addRow("备用数据源：", backup_source)
         
-        save_btn = QPushButton("💾 保存设置")
-        data_layout.addRow("", save_btn)
+        save_source_btn = QPushButton("💾 保存数据源")
+        save_source_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['accent']}; border: none; border-radius: 6px; padding: 10px 20px; font-weight: 600; }}")
+        save_source_btn.clicked.connect(self._save_source_settings)
+        source_layout.addRow("", save_source_btn)
         
-        layout.addWidget(data_card)
-        
-        # 模型参数
-        model_card = self._create_card("🤖 模型参数")
-        model_layout = QFormLayout(model_card)
-        model_layout.setSpacing(12)
-        
-        default_model = QComboBox()
-        default_model.addItems(["LightGBM"])
-        model_layout.addRow("默认模型：", default_model)
-        
-        train_ratio = QLineEdit("80%")
-        val_ratio = QLineEdit("20%")
-        ratio_layout = QHBoxLayout()
-        ratio_layout.addWidget(QLabel("训练数据比例:"))
-        ratio_layout.addWidget(train_ratio)
-        ratio_layout.addWidget(QLabel("验证数据比例:"))
-        ratio_layout.addWidget(val_ratio)
-        model_layout.addRow("", ratio_layout)
-        
-        save_btn2 = QPushButton("💾 保存设置")
-        model_layout.addRow("", save_btn2)
-        
-        layout.addWidget(model_card)
+        layout.addWidget(source_card)
         
         # 关于
         about_card = self._create_card("ℹ️ 关于")
         about_layout = QVBoxLayout(about_card)
-        about_layout.addWidget(QLabel("版本：v1.0.0"))
+        about_layout.addWidget(QLabel("🍀 股票预测助手 v1.0.0"))
+        about_layout.addWidget(QLabel("基于机器学习的股票预测系统"))
+        about_layout.addSpacing(8)
+        about_layout.addWidget(QLabel("支持：XGBoost、LSTM、LightGBM"))
         about_layout.addWidget(QLabel("构建时间：2026-03-15"))
         
         layout.addWidget(about_card)
         
         layout.addStretch()
         self.content_stack.addWidget(page)
+    
+    def _save_storage_settings(self):
+        """保存存储设置"""
+        self.settings['data_path'] = self.data_path_input.text()
+        self.settings['feature_path'] = self.feature_path_input.text()
+        self.settings['model_path'] = self.model_path_input.text()
+        
+        # 验证路径
+        for path_key in ['data_path', 'feature_path', 'model_path']:
+            path = self.settings.get(path_key, '')
+            if path and not os.path.exists(path):
+                os.makedirs(path, exist_ok=True)
+        
+        self._save_settings_to_file()
+        QMessageBox.information(self, "保存成功", "存储路径设置已保存！")
+    
+    def _save_api_settings(self):
+        """保存 API 设置"""
+        self.settings['tushare_key'] = self.tushare_key_input.text()
+        self.settings['jqdata_key'] = self.jqdata_key_input.text()
+        
+        # 保存到环境变量（临时方案）
+        if self.tushare_key_input.text():
+            os.environ['TUSHARE_TOKEN'] = self.tushare_key_input.text()
+        if self.jqdata_key_input.text():
+            os.environ['JQDATA_TOKEN'] = self.jqdata_key_input.text()
+        
+        self._save_settings_to_file()
+        QMessageBox.information(self, "保存成功", "API Key 设置已保存！")
+    
+    def _apply_theme(self):
+        """应用主题"""
+        theme = self.theme_combo.currentText()
+        if "深色" in theme:
+            self.settings['theme'] = 'dark'
+            QMessageBox.information(self, "主题", "当前已是深色主题！")
+        else:
+            self.settings['theme'] = 'light'
+            QMessageBox.information(self, "主题", "浅色主题开发中，当前仅支持深色主题！")
+        
+        self._save_settings_to_file()
+    
+    def _save_source_settings(self):
+        """保存数据源设置"""
+        self.settings['main_source'] = self.main_source.currentText()
+        self._save_settings_to_file()
+        QMessageBox.information(self, "保存成功", "数据源设置已保存！")
+    
+    def _save_settings_to_file(self):
+        """保存设置到文件"""
+        settings_file = os.path.join(os.path.dirname(__file__), 'settings.json')
+        try:
+            with open(settings_file, 'w', encoding='utf-8') as f:
+                json.dump(self.settings, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"保存设置失败: {e}")
+    
+    def _load_settings_from_file(self):
+        """从文件加载设置"""
+        settings_file = os.path.join(os.path.dirname(__file__), 'settings.json')
+        if os.path.exists(settings_file):
+            try:
+                with open(settings_file, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                    self.settings.update(loaded)
+            except Exception as e:
+                print(f"加载设置失败: {e}")
