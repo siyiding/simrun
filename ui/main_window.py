@@ -60,7 +60,7 @@ class SidebarButton(QPushButton):
         
     def _set_style(self):
         style = f"""
-            QPushButton {
+            QPushButton {{
                 background-color: transparent;
                 color: {COLORS['text_secondary']};
                 border: none;
@@ -68,11 +68,11 @@ class SidebarButton(QPushButton):
                 padding: 8px 16px;
                 font-size: 14px;
                 text-align: left;
-            }
-            QPushButton:hover {
+            }}
+            QPushButton:hover {{
                 background-color: {COLORS['sidebar_hover']};
                 color: {COLORS['text_primary']};
-            }
+            }}
         """
         self.setStyleSheet(style)
 
