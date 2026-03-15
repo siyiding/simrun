@@ -1207,15 +1207,9 @@ class MainWindow(QMainWindow):
             elif stock_pool_type == "创业板":
                 stock_pool = self.data_fetcher.get_stock_pool()[:100]
             elif stock_pool_type == "科创板":
-                QMessageBox.information(self, "提示", "科创板功能开发中")
-                self.home_download_btn.setEnabled(True)
-                self.home_progress.setVisible(False)
-                return
+                stock_pool = self.data_fetcher.get_kc_pool()
             elif stock_pool_type == "北证50":
-                QMessageBox.information(self, "提示", "北证50功能开发中")
-                self.home_download_btn.setEnabled(True)
-                self.home_progress.setVisible(False)
-                return
+                stock_pool = self.data_fetcher.get_bj_pool()
             else:
                 stock_pool = self.data_fetcher.get_stock_pool()
 

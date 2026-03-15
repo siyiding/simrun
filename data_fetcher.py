@@ -66,7 +66,95 @@ class DataFetcher:
         logger.info(f"清洗后有效股票数量: {len(stock_pool)} 只")
         return stock_pool
 
-    # --- 股票池数据源策略 ---
+    
+    def get_kc_pool(self):
+        """获取科创板股票列表 (688xxx)"""
+        logger.info("正在获取科创板股票列表...")
+        
+        # 复用 get_stock_pool 的数据源策略
+        strategies = [
+            (self._get_pool_from_akshare_em, "akshare(东方财富)"),
+            (self._get_pool_from_akshare_ths, "akshare(同花顺)"),
+        ]
+        
+        df = None
+        for func, source_name in strategies:
+            logger.info(f"尝试使用数据源: {source_name} 获取科创板列表...")
+            for attempt in range(3):
+                try:
+                    df = func()
+                    if df is not None and not df.empty:
+                        break
+                except Exception as e:
+                    logger.warning(f"[{source_name}] 第 {attempt+1}/3 次获取失败: {e}")
+                    time.sleep(2)
+            
+            if df is not None and not df.empty:
+                break
+        
+        if df is None or df.empty:
+            logger.critical("无法获取科创板股票列表！")
+            return []
+        
+        # 筛选科创板: 688xxx
+        df = df[df['code'].str.startswith('688', na=False)]
+        # 剔除 ST 和 退市
+        df = df[~df['name'].str.contains('ST|退', na=False)]
+        
+        stock_pool = df['code'].tolist()
+        logger.info(f"科创板有效股票数量: {len(stock_pool)} 只")
+        return stock_pool
+
+    def get_bj_pool(self):
+        """获取北证50股票列表 (830xxx, 832xxx)"""
+        logger.info("正在获取北证50股票列表...")
+        
+        # 北证50的代码范围: 830xxx, 832xxx
+        # 尝试使用东方财富获取北交所股票列表
+        try:
+            # 东方财富北交所股票列表
+            df = ak.stock_bj_spot_em()
+            df = df[['代码', '名称']].rename(columns={'代码': 'code', '名称': 'name'})
+            logger.info(f"通过北交所接口获取到 {len(df)} 只股票")
+        except Exception as e:
+            logger.warning(f"北交所专用接口获取失败，尝试从全A股筛选: {e}")
+            # 备用方案：从全A股筛选北交所股票
+            strategies = [
+                (self._get_pool_from_akshare_em, "akshare(东方财富)"),
+                (self._get_pool_from_akshare_ths, "akshare(同花顺)"),
+            ]
+            
+            df = None
+            for func, source_name in strategies:
+                for attempt in range(3):
+                    try:
+                        df = func()
+                        if df is not None and not df.empty:
+                            break
+                    except Exception as e:
+                        logger.warning(f"[{source_name}] 第 {attempt+1}/3 次获取失败: {e}")
+                        time.sleep(2)
+                
+                if df is not None and not df.empty:
+                    break
+            
+            if df is not None and not df.empty:
+                # 筛选北交所: 830xxx, 832xxx
+                df = df[df['code'].str.match(r'^8[3-4]0\d{3}$', na=False)]
+        
+        if df is None or df.empty:
+            logger.warning("无法获取北证50股票列表，返回空列表")
+            return []
+        
+        # 剔除 ST 和 退市
+        df = df[~df['name'].str.contains('ST|退', na=False)]
+        
+        stock_pool = df['code'].tolist()
+        logger.info(f"北证50有效股票数量: {len(stock_pool)} 只")
+        return stock_pool
+
+
+# --- 股票池数据源策略 ---
     def _get_pool_from_akshare_em(self):
         """主策略: 从东方财富获取"""
         # akshare.stock_zh_a_spot_em() gives realtime quote and names
