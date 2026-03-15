@@ -18,9 +18,102 @@ import matplotlib
 matplotlib.use('QtAgg')
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+import time
+from datetime import datetime
+
+# Import data fetcher
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+from data_fetcher import DataFetcher
 
 # Global task state to prevent duplicate runs
 _task_running = False
+
+
+class DownloadWorkerThread(QThread):
+    """后台下载线程"""
+    log_signal = Signal(str, str)  # 日志内容, 日志级别 (info/warning/error)
+    progress_signal = Signal(int, str)  # 进度百分比, 当前股票名称
+    finished_signal = Signal(bool, str, list)  # 是否成功, 消息, 失败股票列表
+    cancelled = False
+    
+    def __init__(self, full=True, data_dir=None):
+        super().__init__()
+        self.full = full
+        self.data_dir = data_dir or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "stock_data"))
+        self.failed_stocks = []
+        
+    def run(self):
+        """执行下载"""
+        try:
+            self.log_signal.emit(">>> 初始化下载任务...", "info")
+            self.log_signal.emit(f">>> 数据目录: {self.data_dir}", "info")
+            
+            # 创建数据获取器
+            fetcher = DataFetcher(data_dir=self.data_dir, use_parquet=True)
+            
+            # 获取股票池
+            self.log_signal.emit(">>> 正在获取股票列表...", "info")
+            stock_pool = fetcher.get_stock_pool()
+            
+            if not stock_pool:
+                self.log_signal.emit(">>> 获取股票列表失败", "error")
+                self.finished_signal.emit(False, "获取股票列表失败", [])
+                return
+            
+            self.log_signal.emit(f">>> 已获取 {len(stock_pool)} 只股票", "info")
+            
+            # 为了演示，先下载前20只股票（可配置）
+            download_count = min(20, len(stock_pool))
+            stocks_to_download = stock_pool[:download_count]
+            
+            self.log_signal.emit(f">>> 开始下载数据 (全量模式: {self.full})", "info")
+            
+            success_count = 0
+            for idx, code in enumerate(stocks_to_download):
+                if self.cancelled:
+                    self.log_signal.emit(">>> 用户取消下载", "warning")
+                    break
+                
+                try:
+                    progress = int((idx + 1) / len(stocks_to_download) * 100)
+                    self.progress_signal.emit(progress, code)
+                    self.log_signal.emit(f">>> [{idx+1}/{len(stocks_to_download)}] 正在下载: {code}", "info")
+                    
+                    # 获取数据
+                    df = fetcher.fetch_daily_data(code, start_date="20230101")
+                    
+                    if df is not None and not df.empty:
+                        fetcher.save_data(df, code)
+                        self.log_signal.emit(f">>> [{idx+1}/{len(stocks_to_download)}] 下载成功: {code}", "info")
+                        success_count += 1
+                    else:
+                        self.log_signal.emit(f">>> [{idx+1}/{len(stocks_to_download)}] 无数据: {code}", "warning")
+                        self.failed_stocks.append(code)
+                    
+                    # 防止被封IP
+                    time.sleep(0.5)
+                    
+                except Exception as e:
+                    self.log_signal.emit(f">>> [{idx+1}/{len(stocks_to_download)}] 下载失败: {code} - {str(e)}", "error")
+                    self.failed_stocks.append(code)
+            
+            fetcher.close()
+            
+            # 发送完成信号
+            if self.cancelled:
+                self.finished_signal.emit(True, f"已取消下载 ({success_count}/{len(stocks_to_download)}) 成功", self.failed_stocks)
+            elif self.failed_stocks:
+                self.finished_signal.emit(True, f"下载完成: {success_count} 成功, {len(self.failed_stocks)} 失败", self.failed_stocks)
+            else:
+                self.finished_signal.emit(True, f"下载完成: {success_count} 成功", [])
+                
+        except Exception as e:
+            self.log_signal.emit(f">>> 下载异常: {str(e)}", "error")
+            self.finished_signal.emit(False, f"下载异常: {str(e)}", [])
+    
+    def cancel(self):
+        """取消下载"""
+        self.cancelled = True
 
 class DataManagerDialog(QDialog):
     """数据管理弹窗对话框"""
@@ -176,6 +269,31 @@ class DataManagerDialog(QDialog):
         progress_layout.addWidget(self.current_stock_label)
         
         layout.addWidget(progress_card)
+        
+        # ===== 日志输出区 =====
+        log_card = self._create_card()
+        log_layout = QVBoxLayout(log_card)
+        
+        log_header = QLabel("▼ 📜 下载日志")
+        log_header.setStyleSheet("color: #B0B0B0; font-size: 13px; font-weight: 600;")
+        log_layout.addWidget(log_header)
+        
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFixedHeight(120)
+        self.log_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #0D0D0D;
+                color: #FFFFFF;
+                font-family: Consolas, monospace;
+                font-size: 11px;
+                border: 1px solid #333333;
+                border-radius: 4px;
+            }
+        """)
+        log_layout.addWidget(self.log_text)
+        
+        layout.addWidget(log_card)
         
         # ===== 异常记录区 =====
         self.error_card = self._create_card()
@@ -357,6 +475,30 @@ class DataManagerDialog(QDialog):
         arrow = "▲" if not is_visible else "▼"
         self.error_header.setText(f"⚠️ 异常股票 ({len(self.error_stocks)}只) {arrow}")
     
+    def _update_error_list(self):
+        """更新异常股票列表显示"""
+        # 清除旧内容
+        while self.error_list_layout.count():
+            item = self.error_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # 添加新的失败股票
+        if self.error_stocks:
+            for stock in self.error_stocks[:10]:  # 最多显示10个
+                label = QLabel(f"• {stock}")
+                label.setStyleSheet("color: #FF9800; font-size: 12px;")
+                self.error_list_layout.addWidget(label)
+            
+            if len(self.error_stocks) > 10:
+                more_label = QLabel(f"... 等共 {len(self.error_stocks)} 只")
+                more_label.setStyleSheet("color: #B0B0B0; font-size: 11px;")
+                self.error_list_layout.addWidget(more_label)
+        else:
+            no_error_label = QLabel("无异常")
+            no_error_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+            self.error_list_layout.addWidget(no_error_label)
+    
     def _update_progress(self, progress, current_stock=""):
         """更新下载进度"""
         self.download_progress = progress
@@ -413,53 +555,76 @@ class DataManagerDialog(QDialog):
         self.btn_incremental.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         
-        # 模拟下载进度（实际应调用后台线程）
-        self._simulate_download(full)
-    
-    def _simulate_download(self, full):
-        """模拟下载进度（实际实现时应调用data_fetcher.py）"""
-        self._update_progress(0, "准备中...")
+        # 清空日志
+        self.log_text.clear()
         
-        # 使用定时器模拟进度
-        self.download_timer = QTimer()
-        self.download_timer.timeout.connect(lambda: self._update_download_step(full))
-        self.download_step = 0
-        self.download_timer.start(100)  # 每100ms更新一次
+        # 获取数据目录
+        data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "stock_data"))
+        
+        # 创建并启动下载线程
+        self.download_worker = DownloadWorkerThread(full=full, data_dir=data_dir)
+        self.download_worker.log_signal.connect(self._append_log)
+        self.download_worker.progress_signal.connect(self._update_progress)
+        self.download_worker.finished_signal.connect(self._on_download_complete)
+        self.download_worker.start()
     
-    def _update_download_step(self, full):
-        """更新下载步骤"""
-        self.download_step += 2
-        if self.download_step >= 100:
-            self.download_timer.stop()
-            self._on_download_complete()
-        else:
-            stocks = ["600519 茅台", "000001 平安银行", "600036 招商银行", 
-                     "000858 五粮液", "601318 中国平安"]
-            current = stocks[self.download_step // 20 % len(stocks)]
-            self._update_progress(self.download_step, current)
+    def _append_log(self, message, level="info"):
+        """追加日志到日志区域"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        formatted_msg = f"[{timestamp}] {message}"
+        
+        # 设置颜色
+        color = "#FFFFFF"  # 默认白色
+        if level == "warning":
+            color = "#FFB300"  # 黄色
+        elif level == "error":
+            color = "#F44336"  # 红色
+        
+        # 追加文本
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(cursor.End)
+        cursor.insertHtml(f'<span style="color: {color};">{formatted_msg}</span><br>')
+        self.log_text.setTextCursor(cursor)
+        self.log_text.ensureCursorVisible()
     
-    def _on_download_complete(self):
+    def _on_download_complete(self, success, message, failed_stocks):
         """下载完成"""
         self._set_status("已就绪")
         self.btn_full_download.setEnabled(True)
         self.btn_incremental.setEnabled(True)
         self.btn_cancel.setEnabled(False)
-        self._update_progress(100, "下载完成")
+        
+        # 更新失败股票列表
+        self.error_stocks = failed_stocks
+        self._update_error_list()
+        
+        # 更新错误区标题
+        self.error_header.setText(f"⚠️ 异常股票 ({len(failed_stocks)}只) ▼")
         
         # 重新加载数据信息
         self._load_data_info()
         
-        QMessageBox.information(self, "完成", "数据更新完成！")
+        # 显示完成消息
+        if failed_stocks:
+            self._set_status("警告")
+            self.log_signal.emit(f">>> 部分失败: {len(failed_stocks)} 只股票", "warning")
+            QMessageBox.warning(self, "部分完成", message)
+        else:
+            self._update_progress(100, "下载完成")
+            self.log_signal.emit(">>> 下载任务完成", "info")
+            QMessageBox.information(self, "完成", message)
     
     def _on_cancel(self):
         """取消下载"""
-        if hasattr(self, 'download_timer'):
-            self.download_timer.stop()
+        if hasattr(self, 'download_worker') and self.download_worker.isRunning():
+            self.download_worker.cancel()
+            self.download_worker.wait()
         self._set_status("已就绪")
         self.btn_full_download.setEnabled(True)
         self.btn_incremental.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self._update_progress(0, "已取消")
+        self.log_signal.emit(">>> 下载已取消", "warning")
     
     def _on_clear_cache(self):
         """清除缓存"""
