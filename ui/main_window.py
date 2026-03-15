@@ -91,7 +91,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("✅ 系统就绪 | 📊 模型未加载 | 💰 账户: ¥1,000,000")
     
     def _apply_dark_theme(self):
-        self.setStyleSheet(f"""
+        style = f"""
             QMainWindow, QWidget {{ background-color: {COLORS['bg_primary']}; }}
             QWidget {{ font-family: "Microsoft YaHei", sans-serif; font-size: 14px; color: {COLORS['text_primary']}; }}
             QLabel {{ color: {COLORS['text_primary']}; background: transparent; }}
@@ -106,7 +106,8 @@ class MainWindow(QMainWindow):
             QTableWidget {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 8px; gridline-color: #404060; }}
             QHeaderView::section {{ background: {COLORS['bg_card']}; color: white; padding: 8px; border: none; border-bottom: 2px solid {COLORS['accent']}; }}
             QStatusBar {{ background: {COLORS['bg_secondary']}; color: {COLORS['text_secondary']}; padding: 6px 12px; border-top: 1px solid #404060; font-size: 12px; }}
-        """)
+        """
+        self.setStyleSheet(style)
     
     def _init_ui(self):
         central_widget = QWidget()
