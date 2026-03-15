@@ -513,12 +513,11 @@ class MainWindow(QMainWindow):
         card.setStyleSheet(card_style)
         
         if title:
-            layout = QVBoxLayout(card)
+            # 不在 card 上设置 layout，只添加 title label
+            # 调用者可以自行设置 layout
             title_label = QLabel(title)
-            title_label_style = f"font-size: 16px; font-weight: 600; color: {COLORS['accent']}; margin-bottom: 12px;"
-            title_label.setStyleSheet(title_label_style)
-            layout.addWidget(title_label)
-            return card
+            title_label.setObjectName("card_title")
+            card._title_label = title_label
         return card
     
     # ==================== 首页 ====================
