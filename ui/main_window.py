@@ -19,9 +19,9 @@ from PySide6.QtWidgets import (
     QLineEdit, QComboBox, QGroupBox, QSplitter,
     QTextEdit, QMessageBox, QProgressBar, QApplication,
     QDialog, QDialogButtonBox, QScrollArea, QSizePolicy,
-    QStackedWidget, QFrame
+    QStackedWidget, QFrame, QDateEdit
 )
-from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QDate
 from PySide6.QtGui import QFont
 import matplotlib
 matplotlib.use('QtAgg')
@@ -48,6 +48,56 @@ COLORS = {
     'sidebar_hover': '#313244',
     'sidebar_active': '#45475A',
 }
+
+class DownloadThread(QThread):
+    """后台数据下载线程"""
+    progress = Signal(int, int, str)
+    finished = Signal(bool, str, int, int)
+    log_signal = Signal(str)
+    
+    def __init__(self, data_fetcher, stock_pool, start_date, parent=None):
+        super().__init__(parent)
+        self.data_fetcher = data_fetcher
+        self.stock_pool = stock_pool
+        self.start_date = start_date
+        self._is_cancelled = False
+    
+    def cancel(self):
+        self._is_cancelled = True
+    
+    def run(self):
+        success_count = 0
+        fail_count = 0
+        total = len(self.stock_pool)
+        
+        self.log_signal.emit(f"开始下载 {total} 只股票的数据...")
+        
+        for i, code in enumerate(self.stock_pool):
+            if self._is_cancelled:
+                self.log_signal.emit("下载已取消")
+                break
+            
+            self.progress.emit(i + 1, total, f"正在下载 {code}...")
+            
+            try:
+                df = self.data_fetcher.fetch_daily_data(code, start_date=self.start_date)
+                if df is not None and not df.empty:
+                    self.data_fetcher.save_data(df, code)
+                    success_count += 1
+                    self.log_signal.emit(f"✓ {code} 下载成功 ({len(df)} 条记录)")
+                else:
+                    fail_count += 1
+                    self.log_signal.emit(f"✗ {code} 无数据")
+            except Exception as e:
+                fail_count += 1
+                self.log_signal.emit(f"✗ {code} 下载失败: {str(e)}")
+            
+            time.sleep(0.3)
+        
+        self.finished.emit(True, f"下载完成！成功: {success_count} 只, 失败: {fail_count} 只", success_count, fail_count)
+
+
+
 
 
 class SidebarButton(QPushButton):
@@ -86,9 +136,37 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
         self.setMinimumSize(1024, 600)
         
+        # 数据下载相关
+        self.data_fetcher = None
+        self.download_thread = None
+        
+        # 数据状态
+        self.data_status = {
+            'stock_count': 0,
+            'last_update': '未知',
+            'data_path': 'stock_data_parquet'
+        }
+        
         self._apply_dark_theme()
         self._init_ui()
         self.statusBar().showMessage("✅ 系统就绪 | 📊 模型未加载 | 💰 账户: ¥1,000,000")
+    
+    def _load_data_status(self):
+        """加载数据状态"""
+        data_path = self.data_status.get('data_path', 'stock_data_parquet')
+        if os.path.exists(data_path):
+            files = [f for f in os.listdir(data_path) if f.endswith('.parquet')]
+            self.data_status['stock_count'] = len(files)
+            
+            if files:
+                latest_file = max([os.path.join(data_path, f) for f in files], key=os.path.getmtime)
+                mod_time = datetime.datetime.fromtimestamp(os.path.getmtime(latest_file))
+                self.data_status['last_update'] = mod_time.strftime("%Y-%m-%d %H:%M")
+            
+            if hasattr(self, 'data_count_label'):
+                self.data_count_label.setText(f"📊 已下载: {self.data_status['stock_count']} 只股票")
+            if hasattr(self, 'last_update_label'):
+                self.last_update_label.setText(f"🕐 最后更新: {self.data_status['last_update']}")
     
     def _apply_dark_theme(self):
         style = f"""
@@ -106,6 +184,7 @@ class MainWindow(QMainWindow):
             QTableWidget {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 8px; gridline-color: #404060; }}
             QHeaderView::section {{ background: {COLORS['bg_card']}; color: white; padding: 8px; border: none; border-bottom: 2px solid {COLORS['accent']}; }}
             QStatusBar {{ background: {COLORS['bg_secondary']}; color: {COLORS['text_secondary']}; padding: 6px 12px; border-top: 1px solid #404060; font-size: 12px; }}
+            QDateEdit {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}
         """
         self.setStyleSheet(style)
     
@@ -219,6 +298,185 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: 700;")
         layout.addWidget(title)
         
+        # ==================== 数据获取区域 ====================
+        fetch_card = self._create_card("📥 数据获取")
+        fetch_layout = QVBoxLayout(fetch_card)
+        
+        config_layout = QHBoxLayout()
+        config_layout.setSpacing(16)
+        
+        # 股票池选择
+        stock_pool_layout = QVBoxLayout()
+        stock_pool_layout.setSpacing(4)
+        stock_pool_layout.addWidget(QLabel("股票池"))
+        self.home_stock_pool = QComboBox()
+        self.home_stock_pool.addItems(["全A股", "沪深300", "中证500", "创业板", "科创板", "北证50"])
+        self.home_stock_pool.setStyleSheet(f"QComboBox {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        stock_pool_layout.addWidget(self.home_stock_pool)
+        config_layout.addLayout(stock_pool_layout)
+        
+        # 数据类型
+        data_type_layout = QVBoxLayout()
+        data_type_layout.setSpacing(4)
+        data_type_layout.addWidget(QLabel("数据类型"))
+        self.home_data_type = QComboBox()
+        self.home_data_type.addItems(["日K线数据", "周K线数据", "月K线数据", "分钟K线数据"])
+        self.home_data_type.setStyleSheet(f"QComboBox {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        data_type_layout.addWidget(self.home_data_type)
+        config_layout.addLayout(data_type_layout)
+        
+        # 日期范围
+        date_layout = QVBoxLayout()
+        date_layout.setSpacing(4)
+        date_layout.addWidget(QLabel("日期范围"))
+        
+        date_range_layout = QHBoxLayout()
+        date_range_layout.setSpacing(8)
+        
+        self.home_start_date = QDateEdit()
+        self.home_start_date.setCalendarPopup(True)
+        self.home_start_date.setDate(QDate(2025, 1, 1))
+        self.home_start_date.setStyleSheet(f"QDateEdit {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        date_range_layout.addWidget(self.home_start_date)
+        
+        date_range_layout.addWidget(QLabel("至"))
+        
+        self.home_end_date = QDateEdit()
+        self.home_end_date.setCalendarPopup(True)
+        self.home_end_date.setDate(QDate.currentDate())
+        self.home_end_date.setStyleSheet(f"QDateEdit {{ background: {COLORS['bg_secondary']}; color: white; border: 1px solid #404060; border-radius: 6px; padding: 8px; }}")
+        date_range_layout.addWidget(self.home_end_date)
+        
+        date_layout.addLayout(date_range_layout)
+        config_layout.addLayout(date_layout)
+        
+        # 下载按钮
+        btn_layout = QVBoxLayout()
+        btn_layout.setSpacing(4)
+        btn_layout.addWidget(QLabel(""))
+        self.home_download_btn = QPushButton("🚀 开始下载")
+        self.home_download_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['success']}; color: white; border: none; border-radius: 8px; padding: 12px 24px; font-weight: 600; font-size: 14px; }} QPushButton:hover {{ background-color: #5DC460; }}")
+        self.home_download_btn.clicked.connect(self._on_home_download_clicked)
+        btn_layout.addWidget(self.home_download_btn)
+        
+        config_layout.addLayout(btn_layout)
+        
+        fetch_layout.addLayout(config_layout)
+        
+        # 下载进度条
+        self.home_progress = QProgressBar()
+        self.home_progress.setValue(0)
+        self.home_progress.setVisible(False)
+        fetch_layout.addWidget(self.home_progress)
+        
+        # 下载状态标签
+        self.home_status_label = QLabel("")
+        self.home_status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        fetch_layout.addWidget(self.home_status_label)
+        
+        layout.addWidget(fetch_card)
+        
+        # ==================== 快捷操作区域 ====================
+        quick_card = self._create_card("⚡ 快捷操作")
+        quick_layout = QHBoxLayout(quick_card)
+        quick_layout.setSpacing(12)
+        
+        # 快速下载
+        quick_download_group = QVBoxLayout()
+        quick_download_group.setSpacing(8)
+        quick_download_group.addWidget(QLabel("快速下载"))
+        
+        quick_dl_btns_layout = QHBoxLayout()
+        quick_dl_btns_layout.setSpacing(8)
+        
+        qd1 = QPushButton("📊 今日行情")
+        qd1.setToolTip("下载今日实时行情数据")
+        qd1.clicked.connect(lambda: self._quick_download("today"))
+        qd1.setStyleSheet(f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 6px; padding: 8px 12px; }} QPushButton:hover {{ background-color: {COLORS['accent']}; }}")
+        quick_dl_btns_layout.addWidget(qd1)
+        
+        qd2 = QPushButton("📈 最近一周")
+        qd2.setToolTip("下载最近一周的数据")
+        qd2.clicked.connect(lambda: self._quick_download("week"))
+        qd2.setStyleSheet(f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 6px; padding: 8px 12px; }} QPushButton:hover {{ background-color: {COLORS['accent']}; }}")
+        quick_dl_btns_layout.addWidget(qd2)
+        
+        qd3 = QPushButton("📅 最近一月")
+        qd3.setToolTip("下载最近一个月的数据")
+        qd3.clicked.connect(lambda: self._quick_download("month"))
+        qd3.setStyleSheet(f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 6px; padding: 8px 12px; }} QPushButton:hover {{ background-color: {COLORS['accent']}; }}")
+        quick_dl_btns_layout.addWidget(qd3)
+        
+        qd4 = QPushButton("📆 最近一年")
+        qd4.setToolTip("下载最近一年的数据")
+        qd4.clicked.connect(lambda: self._quick_download("year"))
+        qd4.setStyleSheet(f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 6px; padding: 8px 12px; }} QPushButton:hover {{ background-color: {COLORS['accent']}; }}")
+        quick_dl_btns_layout.addWidget(qd4)
+        
+        quick_dl_btns_layout.addStretch()
+        quick_download_group.addLayout(quick_dl_btns_layout)
+        quick_layout.addLayout(quick_download_group)
+        
+        # 分隔线
+        separator = QFrame()
+        separator.setFrameShape(QFrame.VLine)
+        separator.setStyleSheet(f"QFrame {{ color: #404060; }}")
+        quick_layout.addWidget(separator)
+        
+        # 快速训练
+        train_group = QVBoxLayout()
+        train_group.setSpacing(8)
+        train_group.addWidget(QLabel("快速训练"))
+        
+        train_btn = QPushButton("🧠 一键训练")
+        train_btn.setToolTip("使用默认配置开始训练模型")
+        train_btn.clicked.connect(lambda: self._on_nav_clicked("模型"))
+        train_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['warning']}; border: none; border-radius: 6px; padding: 10px 20px; font-weight: 600; }} QPushButton:hover {{ background-color: #FFAB2E; }}")
+        train_group.addWidget(train_btn)
+        quick_layout.addLayout(train_group)
+        
+        # 分隔线
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.VLine)
+        separator2.setStyleSheet(f"QFrame {{ color: #404060; }}")
+        quick_layout.addWidget(separator2)
+        
+        # 快速回测
+        backtest_group = QVBoxLayout()
+        backtest_group.setSpacing(8)
+        backtest_group.addWidget(QLabel("快速回测"))
+        
+        bt_btn = QPushButton("📈 开始回测")
+        bt_btn.setToolTip("使用最新模型进行回测")
+        bt_btn.clicked.connect(lambda: self._on_nav_clicked("回测"))
+        bt_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['accent']}; border: none; border-radius: 6px; padding: 10px 20px; font-weight: 600; }} QPushButton:hover {{ background-color: #5A9DE9; }}")
+        backtest_group.addWidget(bt_btn)
+        quick_layout.addLayout(backtest_group)
+        
+        quick_layout.addStretch()
+        layout.addWidget(quick_card)
+        
+        # ==================== 状态显示区域 ====================
+        status_card = self._create_card("📊 数据状态")
+        status_layout = QHBoxLayout(status_card)
+        status_layout.setSpacing(20)
+        
+        self.data_count_label = QLabel(f"📊 已下载: {self.data_status.get('stock_count', 0)} 只股票")
+        self.data_count_label.setStyleSheet(f"font-size: 16px; font-weight: 600;")
+        status_layout.addWidget(self.data_count_label)
+        
+        self.last_update_label = QLabel(f"🕐 最后更新: {self.data_status.get('last_update', '未知')}")
+        self.last_update_label.setStyleSheet(f"font-size: 16px; font-weight: 600;")
+        status_layout.addWidget(self.last_update_label)
+        
+        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn.clicked.connect(self._refresh_data_status)
+        refresh_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 6px; padding: 8px 16px; }} QPushButton:hover {{ background-color: {COLORS['accent']}; }}")
+        status_layout.addWidget(refresh_btn)
+        
+        status_layout.addStretch()
+        layout.addWidget(status_card)
+        
         # 核心指标
         metrics_layout = QHBoxLayout()
         metrics_layout.setSpacing(16)
@@ -244,23 +502,111 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(signal_card)
         
-        # 快速操作
-        quick_card = self._create_card("⚡ 快速操作")
-        quick_layout = QHBoxLayout(quick_card)
-        quick_layout.setSpacing(12)
-        
-        for text, target in [("📥 获取数据", "数据"), ("🧠 训练模型", "模型"), ("📈 开始回测", "回测")]:
-            btn = QPushButton(text)
-            btn_style = f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 8px; padding: 10px 20px; font-weight: 600; }} QPushButton:hover {{ background-color: {COLORS['accent']}; }}"
-            btn.setStyleSheet(btn_style)
-            btn.clicked.connect(lambda checked, n=target: self._on_nav_clicked(n))
-            quick_layout.addWidget(btn)
-        
-        quick_layout.addStretch()
-        layout.addWidget(quick_card)
-        
         layout.addStretch()
         self.content_stack.addWidget(page)
+    
+    def _refresh_data_status(self):
+        """刷新数据状态"""
+        self._load_data_status()
+        QMessageBox.information(self, "刷新成功", f"数据状态已刷新！\n已下载: {self.data_status['stock_count']} 只股票\n最后更新: {self.data_status['last_update']}")
+    
+    def _quick_download(self, period):
+        """快速下载"""
+        today = datetime.datetime.now()
+        
+        if period == "today":
+            start_date = today.strftime("%Y%m%d")
+        elif period == "week":
+            start_date = (today - datetime.timedelta(days=7)).strftime("%Y%m%d")
+        elif period == "month":
+            start_date = (today - datetime.timedelta(days=30)).strftime("%Y%m%d")
+        elif period == "year":
+            start_date = (today - datetime.timedelta(days=365)).strftime("%Y%m%d")
+        else:
+            start_date = "20250101"
+        
+        self._start_download(stock_pool_type="全A股", start_date=start_date)
+    
+    def _on_home_download_clicked(self):
+        """首页下载按钮点击"""
+        stock_pool_type = self.home_stock_pool.currentText()
+        start_date = self.home_start_date.date().toString("yyyyMMdd")
+        end_date = self.home_end_date.date().toString("yyyyMMdd")
+        
+        if start_date > end_date:
+            QMessageBox.warning(self, "日期错误", "开始日期不能晚于结束日期！")
+            return
+        
+        self._start_download(stock_pool_type, start_date)
+    
+    def _start_download(self, stock_pool_type, start_date):
+        """开始数据下载"""
+        self.home_download_btn.setEnabled(False)
+        self.home_progress.setVisible(True)
+        self.home_progress.setValue(0)
+        
+        if self.data_fetcher is None:
+            self.data_fetcher = DataFetcher(data_dir=self.data_status.get('data_path', 'stock_data_parquet'), use_parquet=True)
+        
+        self.home_status_label.setText("正在获取股票列表...")
+        
+        try:
+            if stock_pool_type == "全A股":
+                stock_pool = self.data_fetcher.get_stock_pool()
+            elif stock_pool_type == "沪深300":
+                stock_pool = self.data_fetcher.get_stock_pool()[:300]
+            elif stock_pool_type == "中证500":
+                stock_pool = self.data_fetcher.get_stock_pool()[:500]
+            elif stock_pool_type == "创业板":
+                stock_pool = self.data_fetcher.get_stock_pool()[:100]
+            elif stock_pool_type == "科创板":
+                stock_pool = []
+                QMessageBox.information(self, "提示", "科创板功能开发中")
+            elif stock_pool_type == "北证50":
+                stock_pool = []
+                QMessageBox.information(self, "提示", "北证50功能开发中")
+            else:
+                stock_pool = self.data_fetcher.get_stock_pool()
+            
+            if not stock_pool:
+                QMessageBox.warning(self, "股票池为空", "无法获取股票列表，请检查网络连接！")
+                self.home_download_btn.setEnabled(True)
+                return
+            
+            stock_pool = stock_pool[:100]
+            
+            self.download_thread = DownloadThread(self.data_fetcher, stock_pool, start_date)
+            self.download_thread.progress.connect(self._on_download_progress)
+            self.download_thread.finished.connect(self._on_download_finished)
+            self.download_thread.log_signal.connect(lambda msg: self.home_status_label.setText(msg))
+            self.download_thread.start()
+            
+            self.home_status_label.setText(f"准备下载 {len(stock_pool)} 只股票...")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "下载失败", f"获取股票列表失败：{str(e)}")
+            self.home_download_btn.setEnabled(True)
+            self.home_progress.setVisible(False)
+    
+    def _on_download_progress(self, current, total, status):
+        """下载进度更新"""
+        progress = int(current / total * 100)
+        self.home_progress.setValue(progress)
+        self.home_status_label.setText(f"{status} ({current}/{total})")
+    
+    def _on_download_finished(self, success, message, success_count, fail_count):
+        """下载完成"""
+        self.home_download_btn.setEnabled(True)
+        self.home_progress.setVisible(False)
+        
+        self._load_data_status()
+        
+        if success:
+            QMessageBox.information(self, "下载完成", message)
+        else:
+            QMessageBox.warning(self, "下载失败", message)
+        
+        self.home_status_label.setText(message)
     
     def _create_metric_card(self, title, value, color):
         card = QFrame()
