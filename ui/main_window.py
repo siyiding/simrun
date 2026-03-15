@@ -230,25 +230,54 @@ class TrainThread(QThread):
             self.progress.emit(30, "准备数据...")
             self.log_signal.emit("📊 加载训练数据...")
             
-            # 模拟训练过程（实际使用时调用 trainer 的训练方法）
+            # 调用真实的训练器进行训练
             import time
-            for i in range(5):
-                if self._is_cancelled:
-                    self.log_signal.emit("❌ 训练已取消")
-                    self.finished.emit(False, "训练已取消", {})
-                    return
-                time.sleep(1)
-                self.progress.emit(40 + i * 10, f"训练中... {i*20}%")
-                self.log_signal.emit(f"📈 训练进度: {(i+1)*20}%")
+            start_time = time.time()
+            
+            try:
+                # 运行真实的训练流程
+                trainer.run()
+                
+                train_time = time.time() - start_time
+                
+                # 加载训练结果（指标）
+                import json
+                import os
+                model_dir = self.params.get('model_dir', 'models')
+                
+                metrics = {}
+                if self.model_type == "XGBoost":
+                    metadata_file = os.path.join(model_dir, "xgboost_metadata.json")
+                else:
+                    metadata_file = os.path.join(model_dir, "lstm_metadata.json")
+                
+                if os.path.exists(metadata_file):
+                    with open(metadata_file, 'r') as f:
+                        metadata = json.load(f)
+                        metrics = metadata.get('metrics', {})
+                
+                # 计算准确率（R2 转为百分比形式）
+                r2 = metrics.get('R2', 0)
+                accuracy = f"{r2 * 100:.1f}%" if r2 else "N/A"
+                
+                result = {
+                    'model_type': self.model_type,
+                    'accuracy': accuracy,
+                    'train_time': f"{train_time/60:.1f}分钟",
+                    'metrics': metrics
+                }
+                
+                self.log_signal.emit(f"📊 训练指标: R2={r2:.4f}, RMSE={metrics.get('RMSE', 'N/A')}")
+                
+            except Exception as e:
+                import traceback
+                self.log_signal.emit(f"❌ 训练过程出错: {str(e)}")
+                self.log_signal.emit(traceback.format_exc())
+                self.finished.emit(False, f"训练失败: {str(e)}", {})
+                return
             
             self.progress.emit(90, "保存模型...")
-            self.log_signal.emit("💾 保存模型...")
-            
-            result = {
-                'model_type': self.model_type,
-                'accuracy': f"{60 + (hash(str(time.time())) % 30)}%",
-                'train_time': "约5分钟"
-            }
+            self.log_signal.emit("💾 模型已保存...")
             
             self.progress.emit(100, "训练完成!")
             self.log_signal.emit("✅ 训练完成!")
