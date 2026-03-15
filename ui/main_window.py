@@ -270,7 +270,7 @@ class MainWindow(QMainWindow):
     
     def _create_signal_row(self, code, action, conf, t):
         widget = QWidget()
-        widget.setStyleSheet("background-color: #2A2A3E; border-radius: 8px; padding: 12px;")
+        widget.setStyleSheet(f"background-color: #2A2A3E; border-radius: 8px; padding: 12px;")
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(12, 8, 12, 8)
         
