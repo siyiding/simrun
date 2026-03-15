@@ -219,6 +219,49 @@ class TrainThread(QThread):
                     model_dir=self.params.get('model_dir', 'models'),
                     seq_length=self.params.get('seq_length', 20)
                 )
+            elif self.model_type == "模型融合":
+                from model_fusion import run_fusion
+                self.log_signal.emit("🔄 开始模型融合...")
+                model_dir = self.params.get('model_dir', 'models')
+                
+                # 检查模型文件是否存在
+                import os
+                xgb_model = os.path.join(model_dir, 'xgboost_model.pkl')
+                lstm_model = os.path.join(model_dir, 'best_lstm_model.keras')
+                
+                if not os.path.exists(xgb_model):
+                    self.log_signal.emit("❌ XGBoost 模型不存在，请先训练 XGBoost 模型！")
+                    self.finished.emit(False, "XGBoost 模型不存在", {})
+                    return
+                if not os.path.exists(lstm_model):
+                    self.log_signal.emit("❌ LSTM 模型不存在，请先训练 LSTM 模型！")
+                    self.finished.emit(False, "LSTM 模型不存在", {})
+                    return
+                
+                # 执行融合
+                run_fusion()
+                
+                # 加载融合结果
+                import json
+                fusion_metadata = os.path.join(model_dir, 'fusion_metadata.json')
+                if os.path.exists(fusion_metadata):
+                    with open(fusion_metadata, 'r') as f:
+                        fusion_data = json.load(f)
+                        metrics = fusion_data.get('performance', {}).get('Best', {})
+                else:
+                    metrics = {}
+                
+                result = {
+                    'model_type': '模型融合',
+                    'accuracy': f"{metrics.get('R2', 0) * 100:.1f}%" if metrics.get('R2') else "N/A",
+                    'train_time': "N/A",
+                    'metrics': metrics
+                }
+                self.log_signal.emit(f"📊 融合完成: R2={metrics.get('R2', 'N/A')}")
+                
+                self.progress.emit(100, "融合完成!")
+                self.finished.emit(True, "模型融合完成!", result)
+                return
             else:
                 from xgboost_trainer import XGBoostTrainer
                 trainer = XGBoostTrainer(
@@ -1404,7 +1447,7 @@ class MainWindow(QMainWindow):
         model_layout.setSpacing(12)
         
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["XGBoost", "LightGBM", "LSTM", "集成学习"])
+        self.model_combo.addItems(["XGBoost", "LightGBM", "LSTM", "模型融合", "集成学习"])
         model_layout.addRow("选择模型：", self.model_combo)
         
         param_layout = QHBoxLayout()
