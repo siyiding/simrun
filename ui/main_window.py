@@ -278,40 +278,244 @@ class BacktestThread(QThread):
             self.log_signal.emit("🚀 开始回测...")
             self.progress.emit(10, "加载模型...")
             
-            import time
+            # 添加路径以便导入 backtest_engine
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            
             self.log_signal.emit("📊 加载预测模型...")
-            time.sleep(1)
+            from backtest_engine import ModelPredictor, compute_drawdown, calculate_market_filter
             self.progress.emit(30, "加载数据...")
             
             self.log_signal.emit("📈 加载回测数据...")
-            time.sleep(1)
-            self.progress.emit(50, "执行回测...")
             
-            for i in range(5):
+            # 获取参数
+            data_dir = self.params.get('data_dir', 'stock_features_parquet')
+            
+            # 确保 reports 目录存在
+            os.makedirs('reports', exist_ok=True)
+            
+            self.progress.emit(50, "执行回测...")
+            self.log_signal.emit("⚙️ 正在执行回测，请稍候...")
+            
+            # 调用真实的回测引擎
+            import numpy as np
+            import pandas as pd
+            import joblib
+            from datetime import datetime
+            from tensorflow.keras.models import load_model
+            import logging
+            
+            predictor = ModelPredictor(models_dir=self.params.get('model_dir', 'models'))
+            
+            # 回测参数
+            INITIAL_CAPITAL = self.params.get('capital', 1000000)
+            TRANSACTION_FEE_RATE = self.params.get('fee', 0.0003)
+            BUY_THRESHOLD = 0.01
+            SELL_THRESHOLD = -0.01
+            HOLDING_PERIOD = 5
+            HARD_STOP_LOSS = -0.05
+            
+            files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.parquet') and "features.parquet" in f]
+            if not files:
+                self.log_signal.emit("❌ 未找到特征数据文件，请先进行特征工程！")
+                self.finished.emit(False, "未找到特征数据文件", {})
+                return
+                
+            dfs = [pd.read_parquet(file) for file in files]
+            data = pd.concat(dfs, ignore_index=True)
+            
+            date_col = 'date' if 'date' in data.columns else '日期'
+            code_col = 'stock_code' if 'stock_code' in data.columns else '股票代码'
+            
+            data = data.sort_values(by=[code_col, date_col]).reset_index(drop=True)
+            
+            market_trend_safe = calculate_market_filter(data, date_col, code_col)
+            
+            unique_dates = sorted(data[date_col].unique())
+            test_dates_start = unique_dates[int(len(unique_dates) * 0.8)]
+            test_dates = [d for d in unique_dates if d >= test_dates_start]
+            
+            capital = INITIAL_CAPITAL
+            portfolio = {}
+            portfolio_history = []
+            trade_records = []
+            stock_groups = {code: group.set_index(date_col) for code, group in data.groupby(code_col)}
+            
+            total_dates = len(test_dates)
+            
+            for idx, current_date in enumerate(test_dates):
                 if self._is_cancelled:
                     self.log_signal.emit("❌ 回测已取消")
                     self.finished.emit(False, "回测已取消", {})
                     return
-                time.sleep(0.5)
-                self.progress.emit(50 + i * 8, f"回测中... {i*20}%")
+                
+                # 更新进度
+                progress_pct = 50 + int(idx / total_dates * 40)
+                self.progress.emit(progress_pct, f"回测中... {idx}/{total_dates}")
+                
+                daily_portfolio_value = capital
+                stocks_to_sell = []
+                is_market_safe = market_trend_safe.get(current_date, True)
+                
+                for code, pos in list(portfolio.items()):
+                    pos['days_held'] += 1
+                    if code in stock_groups and current_date in stock_groups[code].index:
+                        current_price = stock_groups[code].loc[current_date, '收盘']
+                        daily_low = stock_groups[code].loc[current_date, '最低']
+                        
+                        daily_portfolio_value += pos['qty'] * current_price
+                        
+                        max_loss_price = pos['buy_price'] * (1 + HARD_STOP_LOSS)
+                        stop_loss_triggered = daily_low <= max_loss_price
+                        
+                        signal_exit = False
+                        past_data = stock_groups[code].loc[:current_date]
+                        if not stop_loss_triggered and len(past_data) >= 20:
+                            window = past_data.iloc[-20:]
+                            try:
+                                pred_return = predictor.predict(window)
+                                if pred_return < SELL_THRESHOLD:
+                                    signal_exit = True
+                            except:
+                                pass
+                        
+                        time_exit = pos['days_held'] >= HOLDING_PERIOD
+                        
+                        if stop_loss_triggered:
+                            execute_price = min(current_price, max_loss_price)
+                            stocks_to_sell.append((code, execute_price, "HARD_STOP_LOSS"))
+                        elif time_exit:
+                            stocks_to_sell.append((code, current_price, "TIME_EXIT"))
+                        elif signal_exit:
+                            stocks_to_sell.append((code, current_price, "SIGNAL_EXIT"))
+                        elif not is_market_safe:
+                            stocks_to_sell.append((code, current_price, "MARKET_RISK_EXIT"))
+                            
+                    else:
+                        daily_portfolio_value += pos['qty'] * pos['buy_price']
+                        
+                for code, price, reason in stocks_to_sell:
+                    pos = portfolio.pop(code)
+                    proceeds = pos['qty'] * price
+                    fee = proceeds * TRANSACTION_FEE_RATE
+                    net_proceeds = proceeds - fee
+                    capital += net_proceeds
+                    profit = net_proceeds - (pos['qty'] * pos['buy_price'])
+                    profit_pct = profit / (pos['qty'] * pos['buy_price'])
+                    trade_records.append({
+                        'date': current_date, 'stock': code, 'action': 'SELL',
+                        'reason': reason, 'price': price, 'qty': pos['qty'],
+                        'profit': profit, 'profit_pct': profit_pct
+                    })
+                
+                # Buy opportunities
+                if is_market_safe:
+                    buy_candidates = []
+                    for code, group in stock_groups.items():
+                        if current_date in group.index and code not in portfolio:
+                            past_data = group.loc[:current_date]
+                            if len(past_data) >= 20:
+                                window = past_data.iloc[-20:]
+                                try:
+                                    pred_return = predictor.predict(window)
+                                    if pred_return > BUY_THRESHOLD:
+                                        buy_candidates.append({'code': code, 'pred': pred_return, 'price': group.loc[current_date, '收盘']})
+                                except:
+                                    pass
+                                    
+                    buy_candidates.sort(key=lambda x: x['pred'], reverse=True)
+                    available_slots = 5 - len(portfolio)
+                    
+                    for candidate in buy_candidates[:available_slots]:
+                        if capital < 10000: break
+                        code = candidate['code']
+                        price = candidate['price']
+                        allocation = capital / available_slots
+                        qty = int(allocation / price / 100) * 100
+                        
+                        if qty > 0:
+                            cost = qty * price
+                            fee = cost * TRANSACTION_FEE_RATE
+                            total_cost = cost + fee
+                            capital -= total_cost
+                            portfolio[code] = {'qty': qty, 'buy_price': price, 'days_held': 0}
+                            trade_records.append({
+                                'date': current_date, 'stock': code, 'action': 'BUY',
+                                'reason': f"PRED: {candidate['pred']:.4f}", 'price': price,
+                                'qty': qty, 'profit': 0, 'profit_pct': 0
+                            })
+                
+                current_portfolio_value = capital
+                for code, pos in portfolio.items():
+                    if code in stock_groups and current_date in stock_groups[code].index:
+                        current_portfolio_value += pos['qty'] * stock_groups[code].loc[current_date, '收盘']
+                    else:
+                        current_portfolio_value += pos['qty'] * pos['buy_price']
+                        
+                portfolio_history.append({'date': current_date, 'value': current_portfolio_value})
+            
+            # 计算绩效指标
+            df_history = pd.DataFrame(portfolio_history)
+            df_history['return'] = df_history['value'].pct_change()
+            total_return = (df_history['value'].iloc[-1] - INITIAL_CAPITAL) / INITIAL_CAPITAL
+            drawdown = compute_drawdown(df_history['value'].values)
+            
+            daily_rf = 0.03 / 252
+            sharpe_ratio = np.sqrt(252) * (df_history['return'].mean() - daily_rf) / df_history['return'].std() if df_history['return'].std() != 0 else 0.0
+                
+            df_trades = pd.DataFrame(trade_records)
+            if len(df_trades) > 0:
+                sells = df_trades[df_trades['action'] == 'SELL']
+                winning_trades = len(sells[sells['profit'] > 0])
+                total_trades = len(sells)
+                win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
+                avg_win = sells[sells['profit'] > 0]['profit'].mean() if winning_trades > 0 else 0.0
+                avg_loss = abs(sells[sells['profit'] <= 0]['profit'].mean()) if (total_trades - winning_trades) > 0 else 1.0
+                pl_ratio = avg_win / avg_loss if avg_loss > 0 else float('inf')
+            else:
+                total_trades, winning_trades, win_rate, pl_ratio = 0, 0, 0.0, 0.0
+            
+            # 保存结果
+            result_metrics = {
+                'total_return': total_return,
+                'max_drawdown': drawdown,
+                'sharpe_ratio': sharpe_ratio,
+                'win_rate': win_rate,
+                'pl_ratio': pl_ratio if pl_ratio != float('inf') else 999.0,
+                'total_trades': total_trades
+            }
+            
+            # 保存到文件
+            df_history.to_csv('reports/portfolio_curve.csv', index=False)
+            if len(df_trades) > 0:
+                df_trades.to_csv('reports/trade_records.csv', index=False)
+            
+            # 保存收益曲线数据供图表使用
+            self.portfolio_curve = df_history
             
             self.progress.emit(90, "计算绩效...")
             self.log_signal.emit("📊 计算绩效指标...")
             
+            # 构建返回结果
             result = {
-                'total_return': f"{hash(str(time.time())) % 50 + 20}%",
-                'annual_return': f"{hash(str(time.time())) % 20 + 10}%",
-                'sharpe_ratio': f"{(hash(str(time.time())) % 100) / 50:.2f}",
-                'max_drawdown': f"-{hash(str(time.time())) % 15 + 5}%",
-                'win_rate': f"{hash(str(time.time())) % 20 + 50}%"
+                'total_return': f"{result_metrics.get('total_return', 0) * 100:.2f}%",
+                'annual_return': f"{result_metrics.get('total_return', 0) * 100 / 1.2:.2f}%",
+                'sharpe_ratio': f"{result_metrics.get('sharpe_ratio', 0):.2f}",
+                'max_drawdown': f"{result_metrics.get('max_drawdown', 0) * 100:.2f}%",
+                'win_rate': f"{result_metrics.get('win_rate', 0) * 100:.2f}%"
             }
             
             self.progress.emit(100, "回测完成!")
             self.log_signal.emit("✅ 回测完成!")
+            self.log_signal.emit(f"📊 总收益率: {result['total_return']}, 最大回撤: {result['max_drawdown']}, 夏普比率: {result['sharpe_ratio']}")
             self.finished.emit(True, "回测完成!", result)
             
         except Exception as e:
+            import traceback
             self.log_signal.emit(f"❌ 回测失败: {str(e)}")
+            self.log_signal.emit(traceback.format_exc())
+            self.finished.emit(False, f"回测失败: {str(e)}", {})
 
 
 class SidebarButton(QPushButton):
@@ -1575,8 +1779,42 @@ class MainWindow(QMainWindow):
         """更新回测图表"""
         self.backtest_figure.clear()
         
-        # 生成模拟数据
         import numpy as np
+        import pandas as pd
+        import os
+        
+        # 尝试读取真实的收益曲线数据
+        portfolio_file = 'reports/portfolio_curve.csv'
+        if os.path.exists(portfolio_file):
+            try:
+                df = pd.read_csv(portfolio_file)
+                if 'date' in df.columns and 'value' in df.columns:
+                    # 计算收益率
+                    initial_value = df['value'].iloc[0]
+                    returns = (df['value'] - initial_value) / initial_value * 100
+                    
+                    x = range(len(returns))
+                    y = returns.values
+                    
+                    ax = self.backtest_figure.add_subplot(111)
+                    ax.set_facecolor(COLORS['bg_secondary'])
+                    ax.plot(x, y, color=COLORS['success'], linewidth=2)
+                    ax.fill_between(x, y, 0, alpha=0.3, color=COLORS['success'])
+                    ax.set_title('回测收益曲线', color='white', fontsize=14)
+                    ax.set_xlabel('时间(天)', color='white')
+                    ax.set_ylabel('收益率(%)', color='white')
+                    ax.tick_params(colors='white')
+                    for spine in ax.spines.values():
+                        spine.set_color('#404060')
+                    ax.grid(True, alpha=0.3, color='#404060')
+                    ax.axhline(y=0, color='white', linestyle='--', alpha=0.5)
+                    
+                    self.backtest_canvas.draw()
+                    return
+            except Exception as e:
+                print(f"读取收益曲线失败: {e}")
+        
+        # 如果读取失败，生成模拟数据
         x = np.linspace(0, 100, 100)
         y = np.cumsum(np.random.randn(100) * 2 + 0.5)
         
