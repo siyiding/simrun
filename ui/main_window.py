@@ -123,7 +123,8 @@ class MainWindow(QMainWindow):
         
         # 主内容区
         content_widget = QWidget()
-        content_widget.setStyleSheet(f"background-color: {COLORS['bg_primary']};")
+        content_style = f"background-color: {COLORS['bg_primary']};"
+        content_widget.setStyleSheet(content_style)
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(20, 20, 20, 20)
         content_layout.setSpacing(16)
@@ -143,7 +144,8 @@ class MainWindow(QMainWindow):
     def _create_sidebar(self):
         sidebar = QWidget()
         sidebar.setFixedWidth(220)
-        sidebar.setStyleSheet(f"QWidget {{ background-color: {COLORS['sidebar_bg']}; }}")
+        sidebar_style = f"QWidget {{ background-color: {COLORS['sidebar_bg']}; }}"
+        sidebar.setStyleSheet(sidebar_style)
         
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(12, 20, 12, 20)
@@ -166,13 +168,15 @@ class MainWindow(QMainWindow):
             layout.addWidget(btn)
         
         # 激活第一个
-        self.nav_buttons[0].setStyleSheet(f"QPushButton {{ background-color: {COLORS['sidebar_active']}; color: white; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; text-align: left; font-weight: 600; }}")
+        active_style = f"QPushButton {{ background-color: {COLORS['sidebar_active']}; color: white; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; text-align: left; font-weight: 600; }}"
+        self.nav_buttons[0].setStyleSheet(active_style)
         
         layout.addStretch()
         
         # 版本
         status_label = QLabel("v1.0.0")
-        status_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px; padding: 8px 12px;")
+        status_label_style = f"color: {COLORS['text_secondary']}; font-size: 12px; padding: 8px 12px;"
+        status_label.setStyleSheet(status_label_style)
         layout.addWidget(status_label)
         
         return sidebar
@@ -183,20 +187,24 @@ class MainWindow(QMainWindow):
         
         for i, btn in enumerate(self.nav_buttons):
             if i == idx:
-                btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['sidebar_active']}; color: white; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; text-align: left; font-weight: 600; }}")
+                active_btn_style = f"QPushButton {{ background-color: {COLORS['sidebar_active']}; color: white; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; text-align: left; font-weight: 600; }}"
+                btn.setStyleSheet(active_btn_style)
             else:
-                btn.setStyleSheet(f"QPushButton {{ background-color: transparent; color: {COLORS['text_secondary']}; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; text-align: left; }} QPushButton:hover {{ background-color: {COLORS['sidebar_hover']}; color: white; }}")
+                inactive_btn_style = f"QPushButton {{ background-color: transparent; color: {COLORS['text_secondary']}; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; text-align: left; }} QPushButton:hover {{ background-color: {COLORS['sidebar_hover']}; color: white; }}"
+                btn.setStyleSheet(inactive_btn_style)
         
         self.content_stack.setCurrentIndex(idx)
     
     def _create_card(self, title=""):
         card = QFrame()
-        card.setStyleSheet(f"QFrame {{ background-color: {COLORS['bg_card']}; border-radius: 12px; padding: 16px; }}")
+        card_style = f"QFrame {{ background-color: {COLORS['bg_card']}; border-radius: 12px; padding: 16px; }}"
+        card.setStyleSheet(card_style)
         
         if title:
             layout = QVBoxLayout(card)
             title_label = QLabel(title)
-            title_label.setStyleSheet(f"font-size: 16px; font-weight: 600; color: {COLORS['accent']}; margin-bottom: 12px;")
+            title_label_style = f"font-size: 16px; font-weight: 600; color: {COLORS['accent']}; margin-bottom: 12px;"
+            title_label.setStyleSheet(title_label_style)
             layout.addWidget(title_label)
             return card
         return card
@@ -243,7 +251,8 @@ class MainWindow(QMainWindow):
         
         for text, target in [("📥 获取数据", "数据"), ("🧠 训练模型", "模型"), ("📈 开始回测", "回测")]:
             btn = QPushButton(text)
-            btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 8px; padding: 10px 20px; font-weight: 600; }} QPushButton:hover {{ background-color: {COLORS['accent']}; }}")
+            btn_style = f"QPushButton {{ background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['accent']}; border-radius: 8px; padding: 10px 20px; font-weight: 600; }} QPushButton:hover {{ background-color: {COLORS['accent']}; }}"
+            btn.setStyleSheet(btn_style)
             btn.clicked.connect(lambda checked, n=target: self._on_nav_clicked(n))
             quick_layout.addWidget(btn)
         
@@ -255,24 +264,28 @@ class MainWindow(QMainWindow):
     
     def _create_metric_card(self, title, value, color):
         card = QFrame()
-        card.setStyleSheet(f"QFrame {{ background-color: {COLORS['bg_card']}; border-radius: 12px; padding: 20px; min-width: 180px; }}")
+        card_style = f"QFrame {{ background-color: {COLORS['bg_card']}; border-radius: 12px; padding: 20px; min-width: 180px; }}"
+        card.setStyleSheet(card_style)
         
         layout = QVBoxLayout(card)
         layout.setSpacing(8)
         
         title_label = QLabel(title)
-        title_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 14px;")
+        title_label_style = f"color: {COLORS['text_secondary']}; font-size: 14px;"
+        title_label.setStyleSheet(title_label_style)
         layout.addWidget(title_label)
         
         value_label = QLabel(value)
-        value_label.setStyleSheet(f"color: {color}; font-size: 28px; font-weight: 700;")
+        value_label_style = f"color: {color}; font-size: 28px; font-weight: 700;"
+        value_label.setStyleSheet(value_label_style)
         layout.addWidget(value_label)
         
         return card
     
     def _create_signal_row(self, code, action, conf, t):
         widget = QWidget()
-        widget.setStyleSheet(f"background-color: #2A2A3E; border-radius: 8px; padding: 12px;")
+        widget_style = f"background-color: #2A2A3E; border-radius: 8px; padding: 12px;"
+        widget.setStyleSheet(widget_style)
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(12, 8, 12, 8)
         
@@ -282,17 +295,20 @@ class MainWindow(QMainWindow):
         
         action_label = QLabel(action)
         action_color = COLORS['success'] if action == "买入" else (COLORS['error'] if action == "卖出" else COLORS['warning'])
-        action_label.setStyleSheet(f"color: {action_color}; font-weight: 600; min-width: 50px;")
+        action_label_style = f"color: {action_color}; font-weight: 600; min-width: 50px;"
+        action_label.setStyleSheet(action_label_style)
         layout.addWidget(action_label)
         
         conf_label = QLabel(conf)
-        conf_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        conf_label_style = f"color: {COLORS['text_secondary']};"
+        conf_label.setStyleSheet(conf_label_style)
         layout.addWidget(conf_label)
         
         layout.addStretch()
         
         time_label = QLabel(t)
-        time_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        time_label_style = f"color: {COLORS['text_secondary']};"
+        time_label.setStyleSheet(time_label_style)
         layout.addWidget(time_label)
         
         return widget
@@ -401,7 +417,8 @@ class MainWindow(QMainWindow):
         train_layout = QVBoxLayout(train_card)
         
         train_info = QLabel("当前模型：LightGBM_v3")
-        train_info.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        train_info_style = f"color: {COLORS['text_secondary']};"
+        train_info.setStyleSheet(train_info_style)
         train_layout.addWidget(train_info)
         
         self.train_progress = QProgressBar()
@@ -409,14 +426,16 @@ class MainWindow(QMainWindow):
         train_layout.addWidget(self.train_progress)
         
         progress_label = QLabel("训练进度：████████████░░░░░░ 80%")
-        progress_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
+        progress_label_style = f"color: {COLORS['text_secondary']};"
+        progress_label.setStyleSheet(progress_label_style)
         train_layout.addWidget(progress_label)
         
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(12)
         
         start_btn = QPushButton("▶️ 开始训练")
-        start_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['success']}; }}")
+        start_btn_style = f"QPushButton {{ background-color: {COLORS['success']}; }}"
+        start_btn.setStyleSheet(start_btn_style)
         stop_btn = QPushButton("⏹️ 停止")
         save_btn = QPushButton("💾 保存模型")
         
@@ -491,7 +510,8 @@ class MainWindow(QMainWindow):
         
         btn_layout = QHBoxLayout()
         start_bt_btn = QPushButton("▶️ 开始回测")
-        start_bt_btn.setStyleSheet(f"QPushButton {{ background-color: {COLORS['success']}; }}")
+        start_bt_btn_style = f"QPushButton {{ background-color: {COLORS['success']}; }}"
+        start_bt_btn.setStyleSheet(start_bt_btn_style)
         stop_bt_btn = QPushButton("⏹️ 停止")
         btn_layout.addWidget(start_bt_btn)
         btn_layout.addWidget(stop_bt_btn)
@@ -515,7 +535,8 @@ class MainWindow(QMainWindow):
         
         for label, value, color in perf_items:
             m_card = QFrame()
-            m_card.setStyleSheet(f"QFrame {{ background-color: {COLORS['bg_secondary']}; border-radius: 8px; padding: 12px; min-width: 100px; }}")
+            m_card_style = f"QFrame {{ background-color: {COLORS['bg_secondary']}; border-radius: 8px; padding: 12px; min-width: 100px; }}"
+            m_card.setStyleSheet(m_card_style)
             m_layout = QVBoxLayout(m_card)
             m_layout.setSpacing(4)
             m_layout.addWidget(QLabel(label))
