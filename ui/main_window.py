@@ -1655,6 +1655,7 @@ class MainWindow(QMainWindow):
         self.model_combo = QComboBox()
         self.model_combo.addItems(["XGBoost", "LightGBM", "LSTM", "模型融合", "集成学习"])
         model_layout.addRow("选择模型：", self.model_combo)
+        param_layout = QHBoxLayout()
         param_layout.setSpacing(12)
 
         self.learning_rate = QLineEdit("0.05")
